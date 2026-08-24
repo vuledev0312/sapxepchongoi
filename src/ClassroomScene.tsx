@@ -1,34 +1,188 @@
-import { Canvas } from '@react-three/fiber'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { MutableRefObject } from 'react'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Environment, Html, OrbitControls, RoundedBox } from '@react-three/drei'
+import { Vector3 } from 'three'
+import type { Group } from 'three'
 import type { Classroom, SeatPosition, Student } from './types'
-import { getSeats } from './lib'
+import { getDisplayName, getSeats } from './lib'
+
+/** Bán kính (pixel) để coi con trỏ là đang nhắm vào một ghế khi kéo thả từ danh sách học sinh. */
+const SEAT_PICK_RADIUS = 110
+
+/** API cho phép giao diện ngoài canvas hỏi “ghế nào đang nằm dưới con trỏ”. */
+export interface SceneHandle {
+  seatAt: (x: number, y: number) => string | null
+}
 
 interface SceneProps {
   room: Classroom
   onSeatClick: (seatId: string) => void
+  /** Kéo học sinh từ ghế này sang ghế khác ngay trong khung 3D. */
+  onSeatSwap?: (fromSeatId: string, toSeatId: string) => void
+  /** Ghế đang được nhắm tới khi kéo thẻ học sinh từ danh sách thả vào khung 3D. */
+  highlightSeatId?: string | null
+  /** Nhận API tìm ghế theo tọa độ con trỏ (dùng cho kéo thả từ ngoài canvas). */
+  handleRef?: MutableRefObject<SceneHandle | null>
+  /** seatId → thời điểm bắt đầu bay (ms). Học sinh sẽ bay vào chỗ theo kiểu anime. */
+  flights?: Record<string, number>
+  flightDuration?: number
+  /** seatId → thông tin cú nhảy đổi chỗ (kéo thả hoặc đổi vị trí). */
+  hops?: Record<string, HopRequest>
+  hopDuration?: number
 }
 
-function Desk({ seat, students, assignments, onSeatClick }: {
+/** Yêu cầu phát hiệu ứng nhảy: bắt đầu khi nào và nhảy từ ghế nào sang. */
+export interface HopRequest {
+  startAt: number
+  /** Ghế cũ của học sinh; bỏ trống nghĩa là nhảy tại chỗ (vừa được đưa từ danh sách chờ vào). */
+  fromSeatId?: string
+}
+
+interface ResolvedHop {
+  startAt: number
+  /** Độ lệch ban đầu trong hệ tọa độ của ghế đích. */
+  offset: [number, number, number]
+}
+
+/** Vị trí thực tế của ghế trong không gian (đã tính độ lệch ghế và góc xoay của bàn). */
+function getSeatWorldPosition(seat: SeatPosition, height = 1.5) {
+  const offset = seat.seatIndex - (seat.seatCount - 1) / 2
+  const point = new Vector3(offset * 0.95, height, 1)
+  point.applyAxisAngle(new Vector3(0, 1, 0), seat.rotation)
+  return point.add(new Vector3(seat.x, 0, seat.z))
+}
+
+/**
+ * Chiếu vị trí từng ghế lên màn hình để tìm ghế gần con trỏ nhất.
+ * Sự kiện kéo thả HTML không đi qua raycaster của r3f nên cần cách tra cứu riêng.
+ */
+function SeatPicker({ seats, handleRef }: { seats: SeatPosition[]; handleRef?: MutableRefObject<SceneHandle | null> }) {
+  const camera = useThree(state => state.camera)
+  const size = useThree(state => state.size)
+  useEffect(() => {
+    if (!handleRef) return
+    handleRef.current = {
+      seatAt: (x, y) => {
+        let nearest: string | null = null
+        let nearestDistance = SEAT_PICK_RADIUS
+        seats.forEach(seat => {
+          const point = getSeatWorldPosition(seat, 1).project(camera)
+          const screenX = (point.x * .5 + .5) * size.width
+          const screenY = (-point.y * .5 + .5) * size.height
+          const distance = Math.hypot(screenX - x, screenY - y)
+          if (distance < nearestDistance) { nearestDistance = distance; nearest = seat.id }
+        })
+        return nearest
+      },
+    }
+    return () => { handleRef.current = null }
+  }, [seats, camera, size, handleRef])
+  return null
+}
+
+/** Hiệu ứng học sinh "bay" từ trên cao vào chỗ ngồi, tốc độ vừa phải như anime. */
+function FlyIn({ startAt, duration, children }: { startAt?: number; duration: number; children: React.ReactNode }) {
+  const ref = useRef<Group>(null)
+  useFrame(() => {
+    const group = ref.current
+    if (!group) return
+    if (startAt === undefined) {
+      group.position.set(0, 0, 0); group.rotation.set(0, 0, 0); group.scale.setScalar(1); group.visible = true
+      return
+    }
+    const elapsed = Date.now() - startAt
+    if (elapsed < 0) { group.visible = false; return }
+    group.visible = true
+    const t = Math.min(1, elapsed / duration)
+    // easeOutBack nhẹ để có cảm giác "đáp xuống" mềm mại
+    const ease = t < 1 ? 1 - Math.pow(1 - t, 3) : 1
+    const swirl = (1 - ease) * Math.PI * 2
+    group.position.set(Math.sin(swirl) * 2.6 * (1 - ease), (1 - ease) * 7.5, Math.cos(swirl) * 2.6 * (1 - ease))
+    group.rotation.set((1 - ease) * 0.5, swirl, (1 - ease) * 0.35)
+    group.scale.setScalar(0.55 + ease * 0.45)
+  })
+  return <group ref={ref}>{children}</group>
+}
+
+/**
+ * Hiệu ứng "nhảy chỗ": học sinh bật lên theo cung parabol từ ghế cũ sang ghế mới,
+ * kèm squash & stretch và một vòng xoay nhẹ cho cảm giác nhí nhảnh.
+ */
+function Hop({ hop, duration, children }: { hop?: ResolvedHop; duration: number; children: React.ReactNode }) {
+  const ref = useRef<Group>(null)
+  useFrame(() => {
+    const group = ref.current
+    if (!group) return
+    if (!hop) {
+      group.position.set(0, 0, 0); group.rotation.set(0, 0, 0); group.scale.set(1, 1, 1)
+      return
+    }
+    const elapsed = Date.now() - hop.startAt
+    if (elapsed < 0) {
+      // Chưa tới lượt: vẫn đứng ở ghế cũ để không bị "nhảy trước"
+      group.position.set(hop.offset[0], hop.offset[1], hop.offset[2]); group.rotation.set(0, 0, 0); group.scale.set(1, 1, 1)
+      return
+    }
+    const t = Math.min(1, elapsed / duration)
+    // Di chuyển ngang mượt (easeInOutSine), độ cao theo hình cung sin
+    const ease = 0.5 - Math.cos(Math.PI * t) / 2
+    const distance = Math.hypot(hop.offset[0], hop.offset[2])
+    const lift = Math.sin(Math.PI * t) * (0.85 + Math.min(1.6, distance * 0.28))
+    group.position.set(hop.offset[0] * (1 - ease), hop.offset[1] * (1 - ease) + lift, hop.offset[2] * (1 - ease))
+    group.rotation.set(0, (1 - ease) * Math.PI * -2, Math.sin(Math.PI * t) * 0.12)
+    // Squash lúc rời ghế và lúc đáp, stretch khi đang bay
+    const squash = t < 0.18 ? 1 - (0.18 - t) / 0.18 * 0.28 : t > 0.86 ? 1 - (t - 0.86) / 0.14 * 0.22 : 1 + Math.sin(Math.PI * t) * 0.1
+    group.scale.set(2 - squash, squash, 2 - squash)
+  })
+  return <group ref={ref}>{children}</group>
+}
+
+function Desk({ seat, students, assignments, onSeatClick, flights, flightDuration, hop, hopDuration, drag }: {
   seat: SeatPosition
   students: Map<string, Student>
   assignments: Record<string, string>
   onSeatClick: (id: string) => void
+  flights?: Record<string, number>
+  flightDuration: number
+  hop?: ResolvedHop
+  hopDuration: number
+  drag: {
+    fromSeatId: string | null
+    targetSeatId: string | null
+    onGrab: (seatId: string) => void
+    onHover: (seatId: string | null) => void
+    onDropAt: (seatId: string) => void
+  }
 }) {
   const isFirst = seat.seatIndex === 0
   const student = students.get(assignments[seat.id])
-  const offset = seat.seatIndex - 0.5
+  const deskWidth = 1.2 + seat.seatCount * 0.75
+  const offset = seat.seatIndex - (seat.seatCount - 1) / 2
+  const legX = deskWidth / 2 - 0.3
+  const isDragSource = drag.fromSeatId === seat.id
+  const isDropTarget = drag.targetSeatId === seat.id && drag.fromSeatId !== seat.id
+  const seatColor = isDropTarget ? '#d47758' : isDragSource ? '#7fae9f' : student ? '#295e52' : '#c9cec8'
+  const backColor = isDropTarget ? '#e29377' : isDragSource ? '#9cc4b6' : student ? '#377769' : '#dde0dc'
   return (
     <group position={[seat.x, 0, seat.z]} rotation={[0, seat.rotation, 0]}>
       {isFirst && <>
-        <RoundedBox args={[2.7, .25, 1.35]} radius={.12} position={[0, .95, 0]} castShadow receiveShadow>
+        <RoundedBox args={[deskWidth, .25, 1.35]} radius={.12} position={[0, .95, 0]} castShadow receiveShadow>
           <meshStandardMaterial color="#b98b60" roughness={.7} />
         </RoundedBox>
-        {[-1.05, 1.05].map(x => <mesh key={x} position={[x, .45, 0]} castShadow><boxGeometry args={[.12, .9, .9]} /><meshStandardMaterial color="#72543d" /></mesh>)}
+        {[-legX, legX].map(x => <mesh key={x} position={[x, .45, 0]} castShadow><boxGeometry args={[.12, .9, .9]} /><meshStandardMaterial color="#72543d" /></mesh>)}
       </>}
-      <group position={[offset * 1.25, .1, 1]} onClick={e => { e.stopPropagation(); onSeatClick(seat.id) }}>
-        <mesh position={[0, .45, 0]} castShadow><boxGeometry args={[.85, .1, .75]} /><meshStandardMaterial color={student ? '#295e52' : '#c9cec8'} /></mesh>
-        <mesh position={[0, .8, .34]} rotation={[-.15, 0, 0]} castShadow><boxGeometry args={[.85, .8, .1]} /><meshStandardMaterial color={student ? '#377769' : '#dde0dc'} /></mesh>
-        {student && <>
+      <group position={[offset * 0.95, .1, 1]}
+        onClick={e => { e.stopPropagation(); if (!drag.fromSeatId) onSeatClick(seat.id) }}
+        onPointerDown={e => { if (!student) return; e.stopPropagation(); drag.onGrab(seat.id) }}
+        onPointerOver={e => { if (!drag.fromSeatId) return; e.stopPropagation(); drag.onHover(seat.id) }}
+        onPointerOut={() => { if (drag.targetSeatId === seat.id) drag.onHover(null) }}
+        onPointerUp={e => { if (!drag.fromSeatId) return; e.stopPropagation(); drag.onDropAt(seat.id) }}>
+        <mesh position={[0, .45, 0]} castShadow><boxGeometry args={[.85, .1, .75]} /><meshStandardMaterial color={seatColor} /></mesh>
+        <mesh position={[0, .8, .34]} rotation={[-.15, 0, 0]} castShadow><boxGeometry args={[.85, .8, .1]} /><meshStandardMaterial color={backColor} /></mesh>
+        {isDropTarget && <mesh position={[0, .06, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[.5, .68, 28]} /><meshBasicMaterial color="#d47758" transparent opacity={.85} /></mesh>}
+        {student && <FlyIn startAt={flights?.[seat.id]} duration={flightDuration}>
+          <Hop hop={hop} duration={hopDuration}>
           <group position={[0, 1.45, .05]}>
             <mesh castShadow><sphereGeometry args={[.29, 20, 20]} /><meshStandardMaterial color={student.gender === 'Nữ' ? '#f0b08f' : student.gender === 'Nam' ? '#d89a74' : '#ddb08d'} /></mesh>
             {student.gender === 'Nữ' ? <>
@@ -39,20 +193,80 @@ function Desk({ seat, students, assignments, onSeatClick }: {
           </group>
           <mesh position={[0, 1.04, .08]} castShadow><boxGeometry args={[.52, .1, .18]} /><meshStandardMaterial color={student.gender === 'Nữ' ? '#d66b8b' : student.gender === 'Nam' ? '#4f7894' : '#858c92'} /></mesh>
           <Html center position={[0, 2.05, 0]} distanceFactor={10} style={{ pointerEvents: 'none' }}>
-             <div className="name-tag">{student.avatar && <img src={student.avatar} alt="" />}{student.name.split(' ').slice(-2).join(' ')}</div>
+             <div className={`name-tag ${isDragSource ? 'dragging' : ''}`} title={student.name}>{student.avatar && <img src={student.avatar} alt="" />}{getDisplayName(student.name)}</div>
           </Html>
-        </>}
+          </Hop>
+        </FlyIn>}
       </group>
     </group>
   )
 }
 
-function Room({ room, onSeatClick }: SceneProps) {
-  const seats = getSeats(room)
-  const students = new Map(room.students.map(s => [s.id, s]))
-  const sizeX = Math.max(14, room.columns * 4)
+/** Vị trí gốc của thân học sinh (điểm đặt ghế) trong không gian, dùng để tính quỹ đạo nhảy. */
+function getSeatAnchor(seat: SeatPosition) {
+  const offset = seat.seatIndex - (seat.seatCount - 1) / 2
+  return new Vector3(offset * 0.95, 0.1, 1)
+    .applyAxisAngle(new Vector3(0, 1, 0), seat.rotation)
+    .add(new Vector3(seat.x, 0, seat.z))
+}
+
+function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, handleRef, flights, flightDuration = 1400, hops, hopDuration = 850 }: SceneProps) {
+  const seats = useMemo(() => getSeats(room), [room])
+  const students = useMemo(() => new Map(room.students.map(s => [s.id, s])), [room.students])
+  /** Đổi seatId nguồn thành độ lệch cục bộ để component Hop chỉ cần nội suy. */
+  const resolvedHops = useMemo(() => {
+    if (!hops || !Object.keys(hops).length) return {} as Record<string, ResolvedHop>
+    const seatById = new Map(seats.map(seat => [seat.id, seat]))
+    const result: Record<string, ResolvedHop> = {}
+    Object.entries(hops).forEach(([seatId, request]) => {
+      const target = seatById.get(seatId)
+      if (!target) return
+      const from = request.fromSeatId ? seatById.get(request.fromSeatId) : undefined
+      const delta = from
+        ? getSeatAnchor(from).sub(getSeatAnchor(target)).applyAxisAngle(new Vector3(0, 1, 0), -target.rotation)
+        : new Vector3(0, 0, 0)
+      result[seatId] = { startAt: request.startAt, offset: [delta.x, delta.y, delta.z] }
+    })
+    return result
+  }, [hops, seats])
+  const [dragFromSeatId, setDragFromSeatId] = useState<string | null>(null)
+  const [dragTargetSeatId, setDragTargetSeatId] = useState<string | null>(null)
+  const controlsRef = useRef<any>(null)
+
+  const drag = useMemo(() => ({
+    fromSeatId: dragFromSeatId,
+    targetSeatId: highlightSeatId ?? dragTargetSeatId,
+    onGrab: (seatId: string) => {
+      setDragFromSeatId(seatId)
+      if (controlsRef.current) controlsRef.current.enabled = false
+    },
+    onHover: (seatId: string | null) => setDragTargetSeatId(seatId),
+    onDropAt: (seatId: string) => {
+      if (dragFromSeatId && onSeatSwap) onSeatSwap(dragFromSeatId, seatId)
+      setDragFromSeatId(null)
+      setDragTargetSeatId(null)
+      if (controlsRef.current) controlsRef.current.enabled = true
+    },
+  }), [dragFromSeatId, dragTargetSeatId, highlightSeatId, onSeatSwap])
+
+  useEffect(() => {
+    const cancel = () => {
+      if (dragFromSeatId) {
+        setDragFromSeatId(null)
+        setDragTargetSeatId(null)
+        if (controlsRef.current) controlsRef.current.enabled = true
+      }
+    }
+    window.addEventListener('pointerup', cancel)
+    return () => window.removeEventListener('pointerup', cancel)
+  }, [dragFromSeatId])
+
+  const maxSeatCount = Math.max(...seats.map(seat => seat.seatCount), 1)
+  const sizeX = Math.max(14, room.columns * (2.2 + maxSeatCount * 0.7) + 6)
   const sizeZ = Math.max(12, room.rows * 4 + 4)
+  const teacherX = (room.teacherDeskSide ?? 'right') === 'right' ? sizeX / 2 - 1.8 : -sizeX / 2 + 1.8
   return <>
+    <SeatPicker seats={seats} handleRef={handleRef} />
     <color attach="background" args={['#ecebe5']} />
     <ambientLight intensity={1.7} />
     <directionalLight position={[7, 12, 6]} intensity={2.2} castShadow shadow-mapSize={[2048, 2048]} />
@@ -62,16 +276,22 @@ function Room({ room, onSeatClick }: SceneProps) {
       <RoundedBox args={[Math.min(10, sizeX - 2), 2, .2]} radius={.08}><meshStandardMaterial color="#214b43" /></RoundedBox>
       <Html center position={[0, 0, .12]} transform distanceFactor={7}><div className="board-word">BẢNG</div></Html>
     </group>
-    <group position={[-sizeX / 2 + 1.5, .1, -sizeZ / 2 + 2.4]}>
-      <RoundedBox args={[2.4, .28, 1.2]} radius={.1} position={[0, .9, 0]}><meshStandardMaterial color="#8f6547" /></RoundedBox>
-      <Html center position={[0, 1.2, 0]} distanceFactor={10}><div className="teacher-label">Bàn giáo viên</div></Html>
+    <group position={[teacherX, .1, -sizeZ / 2 + 2.6]}>
+      <RoundedBox args={[2.6, .28, 1.25]} radius={.1} position={[0, .9, 0]} castShadow receiveShadow><meshStandardMaterial color="#8f6547" roughness={.7} /></RoundedBox>
+      {[-1.1, 1.1].map(x => <mesh key={x} position={[x, .45, 0]} castShadow><boxGeometry args={[.12, .9, .9]} /><meshStandardMaterial color="#6b4d36" /></mesh>)}
+      <mesh position={[0, 1.12, .1]} rotation={[-.35, 0, 0]} castShadow><boxGeometry args={[.9, .05, .6]} /><meshStandardMaterial color="#e7e4dc" /></mesh>
+      <group position={[0, .55, -1.15]}>
+        <mesh position={[0, .32, 0]} castShadow><boxGeometry args={[.75, .08, .68]} /><meshStandardMaterial color="#3d5b53" /></mesh>
+        <mesh position={[0, .7, -.3]} castShadow><boxGeometry args={[.75, .68, .09]} /><meshStandardMaterial color="#3d5b53" /></mesh>
+      </group>
+      <Html center position={[0, 1.75, 0]} distanceFactor={10}><div className="teacher-label">Bàn giáo viên{room.teacher ? ` · ${room.teacher}` : ''}</div></Html>
     </group>
-    <group position={[sizeX / 2 - 1, .7, -sizeZ / 2 + 1.2]}>
+    <group position={[(room.teacherDeskSide ?? 'right') === 'right' ? -sizeX / 2 + 1 : sizeX / 2 - 1, .7, -sizeZ / 2 + 1.2]}>
       <mesh position={[0, .8, 0]}><sphereGeometry args={[.7, 12, 12]} /><meshStandardMaterial color="#678b54" /></mesh>
       <mesh><cylinderGeometry args={[.38, .48, .8, 12]} /><meshStandardMaterial color="#a86f4b" /></mesh>
     </group>
-    {seats.map(seat => <Desk key={seat.id} seat={seat} students={students} assignments={room.assignments} onSeatClick={onSeatClick} />)}
-    <OrbitControls makeDefault minDistance={8} maxDistance={35} maxPolarAngle={Math.PI / 2.08} target={[0, 0, 1]} />
+    {seats.map(seat => <Desk key={seat.id} seat={seat} students={students} assignments={room.assignments} onSeatClick={onSeatClick} flights={flights} flightDuration={flightDuration} hop={resolvedHops[seat.id]} hopDuration={hopDuration} drag={drag} />)}
+    <OrbitControls ref={controlsRef} makeDefault minDistance={8} maxDistance={35} maxPolarAngle={Math.PI / 2.08} target={[0, 0, 1]} />
     <Environment preset="city" />
   </>
 }
