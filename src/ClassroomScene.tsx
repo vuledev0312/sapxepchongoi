@@ -9,6 +9,8 @@ import { getDisplayName, getSeats } from './lib'
 
 /** Bán kính (pixel) để coi con trỏ là đang nhắm vào một ghế khi kéo thả từ danh sách học sinh. */
 const SEAT_PICK_RADIUS = 110
+/** Phần thời gian bay phải trôi qua trước khi ghế "nhận" học sinh (đổi màu, hiện nhãn tên). */
+const LANDING_POINT = 0.55
 
 /** API cho phép giao diện ngoài canvas hỏi “ghế nào đang nằm dưới con trỏ”. */
 export interface SceneHandle {
@@ -79,6 +81,26 @@ function SeatPicker({ seats, handleRef }: { seats: SeatPosition[]; handleRef?: M
     return () => { handleRef.current = null }
   }, [seats, camera, size, handleRef])
   return null
+}
+
+/**
+ * Cho biết học sinh của ghế này đã (gần) đáp xuống chưa.
+ *
+ * `<Html>` của drei render thẳng ra DOM chứ không theo cờ `visible` của three, nên nếu
+ * không hẹn giờ thì nhãn tên sẽ hiện ở chỗ mới trước cả khi người bay tới — trông rất mất
+ * hấp dẫn. Hook trả về `false` trong lúc học sinh còn đang chờ tới lượt / còn đang bay.
+ */
+function useLanded(startAt: number | undefined, duration: number) {
+  const landAt = startAt === undefined ? 0 : startAt + duration * LANDING_POINT
+  const [landed, setLanded] = useState(() => Date.now() >= landAt)
+  useEffect(() => {
+    const wait = landAt - Date.now()
+    if (wait <= 0) { setLanded(true); return }
+    setLanded(false)
+    const timer = window.setTimeout(() => setLanded(true), wait)
+    return () => window.clearTimeout(timer)
+  }, [landAt])
+  return landed
 }
 
 /** Hiệu ứng học sinh "bay" từ trên cao vào chỗ ngồi, tốc độ vừa phải như anime. */
@@ -162,8 +184,15 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
   const legX = deskWidth / 2 - 0.3
   const isDragSource = drag.fromSeatId === seat.id
   const isDropTarget = drag.targetSeatId === seat.id && drag.fromSeatId !== seat.id
-  const seatColor = isDropTarget ? '#d47758' : isDragSource ? '#7fae9f' : student ? '#295e52' : '#c9cec8'
-  const backColor = isDropTarget ? '#e29377' : isDragSource ? '#9cc4b6' : student ? '#377769' : '#dde0dc'
+  // Ghế chỉ được coi là "có người" sau khi học sinh thật sự đáp xuống, để nhãn tên và màu ghế
+  // không xuất hiện trước lúc bạn ấy bay tới.
+  const landed = useLanded(flights?.[seat.id], flightDuration)
+  // Khi đang nhảy đổi chỗ, ghế đích cũng chỉ "sáng lên" lúc bạn ấy đáp xuống
+  const hopLanded = useLanded(hop?.startAt, hopDuration)
+  const seated = Boolean(student) && landed
+  const occupied = seated && hopLanded
+  const seatColor = isDropTarget ? '#d47758' : isDragSource ? '#7fae9f' : occupied ? '#295e52' : '#c9cec8'
+  const backColor = isDropTarget ? '#e29377' : isDragSource ? '#9cc4b6' : occupied ? '#377769' : '#dde0dc'
   return (
     <group position={[seat.x, 0, seat.z]} rotation={[0, seat.rotation, 0]}>
       {isFirst && <>
@@ -192,9 +221,9 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
             </> : <mesh position={[0, .2, -.17]} scale={[1.02, .7, .55]} castShadow><sphereGeometry args={[.3, 16, 12]} /><meshStandardMaterial color={student.gender === 'Nam' ? '#202b38' : '#5b4b42'} roughness={.9} /></mesh>}
           </group>
           <mesh position={[0, 1.04, .08]} castShadow><boxGeometry args={[.52, .1, .18]} /><meshStandardMaterial color={student.gender === 'Nữ' ? '#d66b8b' : student.gender === 'Nam' ? '#4f7894' : '#858c92'} /></mesh>
-          <Html center position={[0, 2.05, 0]} distanceFactor={10} style={{ pointerEvents: 'none' }}>
-             <div className={`name-tag ${isDragSource ? 'dragging' : ''}`} title={student.name}>{student.avatar && <img src={student.avatar} alt="" />}{getDisplayName(student.name)}</div>
-          </Html>
+          {occupied && <Html center position={[0, 2.05, 0]} distanceFactor={10} style={{ pointerEvents: 'none' }}>
+             <div className={`name-tag pop-in ${isDragSource ? 'dragging' : ''}`} title={student.name}>{student.avatar && <img src={student.avatar} alt="" />}{getDisplayName(student.name)}</div>
+          </Html>}
           </Hop>
         </FlyIn>}
       </group>

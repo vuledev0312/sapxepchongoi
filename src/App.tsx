@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Armchair, BarChart3, BookOpen, Box, CheckCircle2, ChevronDown, CircleHelp, Copy, Dices, Download, Eraser, FileDown, FileSpreadsheet, FileText, FileUp, Grid2X2, ImagePlus, LayoutDashboard, Lock, LockOpen, Menu, Pencil, Plane, Plus, Rabbit, RotateCcw, Search, Settings2, Shuffle, Sparkles, Trash2, UserRound, Users, Wand2, X } from 'lucide-react'
+import { Armchair, BarChart3, BookOpen, Box, CheckCircle2, ChevronDown, CircleHelp, Copy, Dices, Download, Eraser, FileDown, FileSpreadsheet, FileText, FileUp, Grid2X2, ImagePlus, LayoutDashboard, Lock, LockOpen, Maximize2, Menu, Minimize2, Pencil, Plane, Plus, Rabbit, RotateCcw, Search, Settings2, Shuffle, Sparkles, Trash2, UserRound, Users, Wand2, X } from 'lucide-react'
 import ClassroomScene, { type HopRequest, type SceneHandle } from './ClassroomScene'
 import { DEFAULT_COLUMN_GENDER_RATIO, MAX_SEATS_PER_DESK, RANDOM_STUDENT_COUNT_OPTIONS, arrange, createClassroom, createSampleStudents, demoStudents, downloadStudentTemplate, exportPdf, exportStudentsCsv, exportWord, generateRandomStudents, getDeskSeatCount, getDisplayName, getSeats, legacyDemoStudentNames, normalizeGenderRatio, parseStudents, studentsToCsv, uid } from './lib'
 import type { ArrangeMode, ArrangeScope, Classroom, LayoutStyle, Student, ViewMode } from './types'
@@ -68,6 +68,9 @@ function App() {
   const [hopEffect, setHopEffect] = useState(true)
   const [hops, setHops] = useState<Record<string, HopRequest>>({})
   const hopTimer = useRef<number | null>(null)
+  /** Mốc thời gian đã trôi qua, dùng để biết học sinh nào đã tới lượt bay (chế độ 2D). */
+  const [flightNow, setFlightNow] = useState(0)
+  const [immersive, setImmersive] = useState(false)
   const [showNewRoom, setShowNewRoom] = useState(false)
   const [newRoomName, setNewRoomName] = useState('')
   const [newRoomSource, setNewRoomSource] = useState<NewRoomSource>('sample')
@@ -94,6 +97,55 @@ function App() {
     if (flightTimer.current) window.clearTimeout(flightTimer.current)
     if (hopTimer.current) window.clearTimeout(hopTimer.current)
   }, [])
+  /**
+   * Hẹn giờ đúng từng lượt bay. Nhờ vậy ghế chưa tới lượt vẫn hiển thị là ghế trống,
+   * tên học sinh chỉ xuất hiện khi bạn ấy thật sự bay vào chỗ.
+   */
+  useEffect(() => {
+    const times = [...new Set(Object.values(flights))].sort((a, b) => a - b)
+    if (!times.length) return
+    const now = Date.now()
+    setFlightNow(now)
+    const timers = times.filter(at => at > now).map(at => window.setTimeout(() => setFlightNow(at), at - now))
+    return () => timers.forEach(timer => window.clearTimeout(timer))
+  }, [flights])
+
+  /**
+   * Bật/tắt chế độ toàn màn hình. Cố gắng dùng Fullscreen API của trình duyệt để ẩn cả
+   * thanh công cụ; nếu trình duyệt từ chối (Safari cũ, iframe không có quyền) thì vẫn giữ
+   * chế độ "toàn khung" của ứng dụng để sơ đồ chiếm hết cửa sổ.
+   */
+  const toggleImmersive = async () => {
+    const next = !immersive
+    setImmersive(next)
+    setShowArrange(false)
+    setShowExport(false)
+    setMobileNav(false)
+    try {
+      if (next) await document.documentElement.requestFullscreen?.()
+      else if (document.fullscreenElement) await document.exitFullscreen?.()
+    } catch { /* trình duyệt chặn: vẫn dùng chế độ toàn khung trong ứng dụng */ }
+    setToast(next ? 'Đã bật toàn màn hình — nhấn Esc hoặc F để thoát' : 'Đã thoát toàn màn hình')
+  }
+  // Đồng bộ khi người dùng thoát toàn màn hình bằng Esc / nút của trình duyệt
+  useEffect(() => {
+    const sync = () => { if (!document.fullscreenElement) setImmersive(false) }
+    document.addEventListener('fullscreenchange', sync)
+    return () => document.removeEventListener('fullscreenchange', sync)
+  }, [])
+  // Phím tắt: F bật/tắt toàn màn hình, Esc thoát (bỏ qua khi đang gõ trong ô nhập liệu)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target && (target.isContentEditable || /^(input|textarea|select)$/i.test(target.tagName))) return
+      if (event.key === 'Escape' && immersive) { void toggleImmersive(); return }
+      if ((event.key === 'f' || event.key === 'F') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault(); void toggleImmersive()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [immersive])
 
   const updateRoom = (patch: Partial<Classroom>) => setRooms(list => list.map(r => r.id === room.id ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r))
   /** Mở hộp thoại tạo lớp để chọn nguồn danh sách (trống / mẫu / ngẫu nhiên). */
@@ -126,13 +178,26 @@ function App() {
     setTourStep(0)
   }
   const finishTutorial = () => setTourStep(null)
+  /** Ô ghế 2D theo seatId, dùng để đo khoảng cách khi phát hiệu ứng nhảy chỗ. */
+  const seatRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  /** seatId → độ lệch (px) từ ghế cũ tới ghế mới, để học sinh nhảy đúng quỹ đạo trong chế độ 2D. */
+  const [hopOffsets, setHopOffsets] = useState<Record<string, { x: number; y: number }>>({})
   /** Bật hiệu ứng nhảy chỗ cho các ghế vừa đổi người (dùng khi kéo thả / đổi chỗ). */
   const playHop = (moves: { seatId: string; fromSeatId?: string }[]) => {
-    if (!hopEffect || !moves.length) return setHops({})
+    if (!hopEffect || !moves.length) { setHops({}); setHopOffsets({}); return }
     const startAt = Date.now()
+    // Đo ngay lúc này: lưới ghế chưa đổi vị trí nên khoảng cách giữa hai ô vẫn đúng
+    const offsets: Record<string, { x: number; y: number }> = {}
+    moves.forEach(move => {
+      if (!move.fromSeatId) return
+      const from = seatRefs.current[move.fromSeatId]?.getBoundingClientRect()
+      const to = seatRefs.current[move.seatId]?.getBoundingClientRect()
+      if (from && to) offsets[move.seatId] = { x: from.left - to.left, y: from.top - to.top }
+    })
+    setHopOffsets(offsets)
     setHops(Object.fromEntries(moves.map(move => [move.seatId, { startAt, fromSeatId: move.fromSeatId }])))
     if (hopTimer.current) window.clearTimeout(hopTimer.current)
-    hopTimer.current = window.setTimeout(() => setHops({}), HOP_DURATION + 120)
+    hopTimer.current = window.setTimeout(() => { setHops({}); setHopOffsets({}) }, HOP_DURATION + 120)
   }
   const placeStudent = (seatId: string, studentId: string) => {
     const locked = new Set(room.lockedSeats ?? [])
@@ -303,7 +368,7 @@ function App() {
     setToast('Đã xóa học sinh')
   }
 
-  return <div className={`app-shell ${tourStep !== null ? `tour-active tour-step-${tourStep}` : ''}`}>
+  return <div className={`app-shell ${immersive ? 'immersive' : ''} ${tourStep !== null ? `tour-active tour-step-${tourStep}` : ''}`}>
     <header className="topbar">
       <button className="mobile-menu icon-button" aria-label="Mở menu" onClick={() => setMobileNav(true)}><Menu /></button>
       <div className="brand"><div className="brand-mark"><Armchair size={21} /></div><div><strong>Lớp Học 3D</strong><span>Không gian học tập thông minh</span></div></div>
@@ -342,8 +407,10 @@ function App() {
         <div><div className="eyebrow">SƠ ĐỒ CHỖ NGỒI <span>/</span> {room.name.toUpperCase()}</div><h1>{room.name} — Học kỳ I</h1><p>Kéo để đổi chỗ; bật “Cố định chỗ” rồi chọn các ghế cần giữ nguyên khi sắp xếp.</p></div>
         <div className="status"><i /> Đã lưu <span>•</span> {new Date(room.updatedAt).toLocaleTimeString('vi', { hour: '2-digit', minute: '2-digit' })}</div>
       </div>
+      <div className="stage">
       <div className="toolbar">
         <div className="segmented"><button className={view === '3d' ? 'active' : ''} onClick={() => setView('3d')}><Box size={17}/> 3D</button><button className={view === '2d' ? 'active' : ''} onClick={() => setView('2d')}><Grid2X2 size={17}/> 2D</button></div>
+        {immersive && <div className="stage-title"><Armchair size={15}/> {room.name}{room.teacher ? ` · ${room.teacher}` : ''}</div>}
         <div className="toolbar-spacer" />
         <button className={`tool-button lock-button ${lockMode ? 'active' : ''}`} onClick={() => { setLockMode(!lockMode); if (view !== '2d') setView('2d') }}>{lockMode ? <Lock size={16}/> : <LockOpen size={16}/>} {lockMode ? 'Đang chọn chỗ khóa' : `Cố định chỗ (${room.lockedSeats?.length ?? 0})`}</button>
          <button className="tool-button tour-arrange-button" onClick={() => setShowArrange(!showArrange)}><Sparkles size={17}/> Tự động sắp xếp <ChevronDown size={15}/></button>
@@ -362,6 +429,7 @@ function App() {
           <small>Khi kéo thả hoặc đổi chỗ, học sinh sẽ nhảy sang vị trí mới. Các chỗ có biểu tượng khóa luôn được giữ nguyên.</small>
         </div>}
         <button className="icon-button bordered" title="Xóa các vị trí chưa khóa" onClick={clearUnlocked}><RotateCcw size={17}/></button>
+        <button className={`icon-button bordered fullscreen-button ${immersive ? 'active' : ''}`} aria-pressed={immersive} title={immersive ? 'Thoát toàn màn hình (Esc / F)' : 'Toàn màn hình (F)'} onClick={() => void toggleImmersive()}>{immersive ? <Minimize2 size={17}/> : <Maximize2 size={17}/>}</button>
       </div>
 
       <section className="content-grid">
@@ -376,11 +444,18 @@ function App() {
           </div> :
           <div className={`floor-plan layout-${room.layout}`} style={{ gridTemplateColumns: `repeat(${room.columns}, minmax(110px, 1fr))` }}>
             {Array.from({ length: room.rows * room.columns }, (_, desk) => <div className="desk-2d" key={desk}><div className="desk-number">Bàn {desk + 1} · {getDeskSeatCount(room, desk)} ghế</div><div className="seats-row">{seats.filter(s => s.deskIndex === desk).map(seat => {
-              const student = studentsById.get(room.assignments[seat.id]); const isLocked = (room.lockedSeats ?? []).includes(seat.id)
-              const flightAt = flights[seat.id]; const flying = student && flightAt !== undefined
+              const assigned = studentsById.get(room.assignments[seat.id]); const isLocked = (room.lockedSeats ?? []).includes(seat.id)
+              const flightAt = flights[seat.id]
+              // Chưa tới lượt bay thì ghế vẫn là ghế trống — tên chỉ hiện khi học sinh thật sự bay vào
+              const waiting = Boolean(assigned) && flightAt !== undefined && flightAt > flightNow
+              const student = waiting ? undefined : assigned
+              const flying = Boolean(student) && flightAt !== undefined
               const hopping = Boolean(student) && !flying && hops[seat.id] !== undefined
-              return <div key={seat.id} className={`seat-2d ${student ? 'occupied' : ''} ${isLocked ? 'locked' : ''} ${lockMode ? 'lock-mode' : ''} ${dropTargetId === seat.id ? 'drop-target' : ''} ${student?.id === selectedStudentId ? 'selected-student' : ''} ${flying ? 'flying' : ''} ${hopping ? 'hopping' : ''}`} tabIndex={0}
-                style={flying ? { animationDuration: `${FLIGHT_DURATION}ms`, animationDelay: `${Math.max(0, flightAt - Date.now())}ms` } : hopping ? { animationDuration: `${HOP_DURATION}ms` } : undefined}
+              const hopOffset = hopping ? hopOffsets[seat.id] : undefined
+              return <div key={seat.id} ref={node => { seatRefs.current[seat.id] = node }} className={`seat-2d ${student ? 'occupied' : ''} ${isLocked ? 'locked' : ''} ${lockMode ? 'lock-mode' : ''} ${dropTargetId === seat.id ? 'drop-target' : ''} ${student?.id === selectedStudentId ? 'selected-student' : ''} ${flying ? 'flying' : ''} ${hopping ? 'hopping' : ''} ${hopOffset ? 'hop-travel' : ''}`} tabIndex={0}
+                style={flying ? { animationDuration: `${FLIGHT_DURATION}ms` }
+                  : hopping ? { animationDuration: `${HOP_DURATION}ms`, ...(hopOffset ? { '--hop-x': `${hopOffset.x}px`, '--hop-y': `${hopOffset.y}px` } as React.CSSProperties : {}) }
+                  : undefined}
                 draggable={Boolean(student) && !isLocked && !lockMode}
                 onDragStart={event => student && beginDrag(event, student.id)}
                 onDragEnd={() => { dragStudent.current = null; setDropTargetId(null) }}
@@ -416,6 +491,7 @@ function App() {
           </div>
         </aside>
       </section>
+      </div>
       </>}
     </main>
 

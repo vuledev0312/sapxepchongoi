@@ -168,6 +168,50 @@ const shuffle = <T,>(input: T[]) => {
   return copy
 }
 
+/**
+ * Xếp lại thứ tự ghế theo từng "lượt ghế": lượt đầu lấy ghế số 1 của mọi bàn, hết lượt
+ * mới quay lại ghế số 2… Nhờ vậy học sinh trải đều tới cả những dãy cuối lớp và mỗi bàn
+ * chỉ có 1 hoặc 2 bạn, thay vì dồn kín các bàn đầu rồi bỏ trống các bàn phía sau.
+ *
+ * @param randomizeExtraDesks Xáo thứ tự từ lượt thứ hai trở đi để chọn ngẫu nhiên bàn nào
+ * được thêm bạn thứ hai. Lượt đầu luôn giữ nguyên thứ tự gần bảng → xa bảng nên học sinh
+ * ưu tiên vẫn được ngồi trên.
+ */
+function spreadSeats(seatList: SeatPosition[], randomizeExtraDesks = false): SeatPosition[] {
+  const passes = new Map<number, SeatPosition[]>()
+  seatList.forEach(seat => {
+    const wave = passes.get(seat.seatIndex)
+    if (wave) wave.push(seat); else passes.set(seat.seatIndex, [seat])
+  })
+  return [...passes.keys()].sort((a, b) => a - b).flatMap(seatIndex => {
+    const wave = passes.get(seatIndex)!
+    return randomizeExtraDesks && seatIndex > 0 ? shuffle(wave) : wave
+  })
+}
+
+/**
+ * Chia số học sinh cho từng dãy dọc sao cho các dãy đầy dần đều nhau: mỗi vòng thêm 1 bạn
+ * cho những dãy còn nhiều chỗ trống nhất. Nhờ vậy khi lớp chưa kín, dãy cuối vẫn có người
+ * chứ không bị bỏ trống vì hai dãy đầu đã "ăn" hết học sinh.
+ *
+ * @param minimums Số học sinh đang ngồi sẵn ở mỗi dãy — không được xếp ít hơn con số này.
+ */
+function shareByLane(capacities: number[], total: number, minimums: number[] = []): number[] {
+  const quotas = capacities.map((capacity, index) => Math.min(capacity, Math.max(0, minimums[index] ?? 0)))
+  let left = Math.max(0, total - quotas.reduce((sum, value) => sum + value, 0))
+  while (left > 0) {
+    const roomy = capacities
+      .map((capacity, index) => ({ index, free: capacity - quotas[index] }))
+      .filter(lane => lane.free > 0)
+      .sort((a, b) => b.free - a.free || a.index - b.index)
+    if (!roomy.length) break
+    const take = Math.min(left, roomy.length)
+    for (let n = 0; n < take; n++) quotas[roomy[n].index]++
+    left -= take
+  }
+  return quotas
+}
+
 export function normalizeGenderRatio(ratio?: ColumnGenderRatio): ColumnGenderRatio {
   const male = Math.max(0, Math.round(Number(ratio?.male ?? DEFAULT_COLUMN_GENDER_RATIO.male)) || 0)
   const female = Math.max(0, Math.round(Number(ratio?.female ?? DEFAULT_COLUMN_GENDER_RATIO.female)) || 0)
@@ -184,20 +228,24 @@ function arrangeByColumn(room: Classroom, availableSeats: SeatPosition[], availa
   const others = shuffle(availableStudents.filter(student => student.gender === 'Khác'))
   const next: Record<string, string> = { ...fixedAssignments }
   const columns = [...new Set(availableSeats.map(seat => seat.column))].sort((a, b) => a - b)
+  // Ghế của từng dãy, đã trải đều theo từng lượt ghế (mỗi bàn 1 bạn trước, dư mới tới bạn thứ hai)
+  const lanes = columns.map(column => spreadSeats(availableSeats
+    .filter(seat => seat.column === column)
+    .sort((a, b) => a.row - b.row || a.deskIndex - b.deskIndex || a.seatIndex - b.seatIndex), true))
+  // Chia đều học sinh cho các dãy để dãy cuối không bị bỏ trống khi lớp chưa kín chỗ
+  const quotas = shareByLane(lanes.map(lane => lane.length), availableStudents.length)
   let maleCarry = 0
-  columns.forEach(column => {
-    const laneSeats = availableSeats
-      .filter(seat => seat.column === column)
-      .sort((a, b) => a.row - b.row || a.deskIndex - b.deskIndex || a.seatIndex - b.seatIndex)
-    const exactMale = laneSeats.length * maleShare + maleCarry
+  lanes.forEach((laneSeats, laneIndex) => {
+    const quota = quotas[laneIndex]
+    const exactMale = quota * maleShare + maleCarry
     let targetMale = Math.round(exactMale)
-    targetMale = Math.min(laneSeats.length, Math.max(0, targetMale))
+    targetMale = Math.min(quota, Math.max(0, targetMale))
     maleCarry = exactMale - targetMale
     const picked: Student[] = []
     for (let index = 0; index < targetMale && males.length; index++) picked.push(males.shift()!)
-    while (picked.length < laneSeats.length && females.length) picked.push(females.shift()!)
-    while (picked.length < laneSeats.length && males.length) picked.push(males.shift()!)
-    while (picked.length < laneSeats.length && others.length) picked.push(others.shift()!)
+    while (picked.length < quota && females.length) picked.push(females.shift()!)
+    while (picked.length < quota && males.length) picked.push(males.shift()!)
+    while (picked.length < quota && others.length) picked.push(others.shift()!)
     // Ưu tiên gần bảng, phần còn lại xáo ngẫu nhiên trong dãy
     const laneStudents = shuffle(picked).sort((a, b) => Number(b.priority) - Number(a.priority))
     laneSeats.forEach((seat, index) => { if (laneStudents[index]) next[seat.id] = laneStudents[index].id })
@@ -219,13 +267,24 @@ export function arrange(room: Classroom, mode: ArrangeMode, scope: ArrangeScope 
     const next: Record<string, string> = { ...fixedAssignments }
     const assignedIds = new Set(Object.values(room.assignments))
     const waiting = shuffle(availableStudents.filter(student => !assignedIds.has(student.id)))
-    for (let column = 0; column < room.columns; column++) {
-      const laneSeats = availableSeats.filter(seat => seat.column === column)
+    // Trải đều trong dãy: mỗi bàn nhận 1 bạn trước, dư mới xếp bạn thứ hai
+    const lanes = Array.from({ length: room.columns }, (_, column) =>
+      spreadSeats(availableSeats.filter(seat => seat.column === column), true))
+    const laneStudentLists = lanes.map(laneSeats => {
       const laneIds = new Set(laneSeats.map(seat => room.assignments[seat.id]).filter(Boolean))
-      const laneStudents = shuffle(availableStudents.filter(student => laneIds.has(student.id)))
-      while (laneStudents.length < laneSeats.length && waiting.length) laneStudents.push(waiting.shift()!)
+      return shuffle(availableStudents.filter(student => laneIds.has(student.id)))
+    })
+    // Chia đều số bạn còn chờ cho các dãy, giữ nguyên số bạn đang ngồi sẵn ở mỗi dãy
+    const quotas = shareByLane(
+      lanes.map(lane => lane.length),
+      laneStudentLists.reduce((sum, lane) => sum + lane.length, 0) + waiting.length,
+      laneStudentLists.map(lane => lane.length),
+    )
+    lanes.forEach((laneSeats, laneIndex) => {
+      const laneStudents = laneStudentLists[laneIndex]
+      while (laneStudents.length < quotas[laneIndex] && waiting.length) laneStudents.push(waiting.shift()!)
       laneSeats.forEach((seat, index) => { if (laneStudents[index]) next[seat.id] = laneStudents[index].id })
-    }
+    })
     return next
   }
 
@@ -244,9 +303,12 @@ export function arrange(room: Classroom, mode: ArrangeMode, scope: ArrangeScope 
     while (groups.some(g => g.length)) groups.forEach(g => { const item = g.shift(); if (item) remaining.push(item) })
   }
   const ordered = [...priority, ...remaining]
+  // Chế độ ngẫu nhiên: rải học sinh khắp lớp (kể cả các dãy cuối), mỗi bàn 1 người trước rồi mới tới người thứ hai.
+  // Các tiêu chí còn lại (tên, học lực, chiều cao…) giữ thứ tự ghế gốc để logic "gần bảng" không bị đổi.
+  const targetSeats = mode === 'random' ? spreadSeats(availableSeats, true) : availableSeats
   return {
     ...fixedAssignments,
-    ...Object.fromEntries(availableSeats.slice(0, ordered.length).map((seat, index) => [seat.id, ordered[index].id])),
+    ...Object.fromEntries(targetSeats.slice(0, ordered.length).map((seat, index) => [seat.id, ordered[index].id])),
   }
 }
 
