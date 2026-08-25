@@ -2,6 +2,8 @@ export type LayoutStyle = 'grid' | 'u-shape' | 'pairs'
 export type ViewMode = '3d' | '2d'
 export type ArrangeMode = 'random' | 'name' | 'performance' | 'gender' | 'height' | 'column'
 export type ArrangeScope = 'all' | 'lane'
+/** Quy ước giới tính cho dãy bàn cuối (dãy xa bảng nhất). */
+export type LastRowRule = 'none' | 'male' | 'female' | 'mixed'
 
 export interface ColumnGenderRatio {
   male: number
@@ -38,6 +40,10 @@ export interface Classroom {
   teacherDeskSide?: 'left' | 'right'
   /** Tỉ lệ nam/nữ tương đối trên mỗi hàng dọc. */
   columnGenderRatio?: ColumnGenderRatio
+  /** Quy ước giới tính cho dãy bàn cuối: toàn nam, toàn nữ hoặc nam nữ xen kẽ. */
+  lastRowRule?: LastRowRule
+  /** Năm học in trên bản PDF, ví dụ “2026 – 2027”. */
+  schoolYear?: string
   updatedAt: string
 }
 

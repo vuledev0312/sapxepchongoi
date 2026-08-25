@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Armchair, BarChart3, BookOpen, Box, CheckCircle2, ChevronDown, CircleHelp, Copy, Dices, Download, Eraser, FileDown, FileSpreadsheet, FileText, FileUp, Grid2X2, ImagePlus, LayoutDashboard, Lock, LockOpen, Maximize2, Menu, Minimize2, Pencil, Plane, Plus, Rabbit, RotateCcw, Search, Settings2, Shuffle, Sparkles, Trash2, UserRound, Users, Wand2, X } from 'lucide-react'
 import ClassroomScene, { type HopRequest, type SceneHandle } from './ClassroomScene'
-import { DEFAULT_COLUMN_GENDER_RATIO, MAX_SEATS_PER_DESK, RANDOM_STUDENT_COUNT_OPTIONS, arrange, createClassroom, createSampleStudents, demoStudents, downloadStudentTemplate, exportPdf, exportStudentsCsv, exportWord, generateRandomStudents, getDeskSeatCount, getDisplayName, getSeats, legacyDemoStudentNames, normalizeGenderRatio, parseStudents, studentsToCsv, uid } from './lib'
-import type { ArrangeMode, ArrangeScope, Classroom, LayoutStyle, Student, ViewMode } from './types'
+import { DEFAULT_COLUMN_GENDER_RATIO, LAST_ROW_RULE_LABELS, LAST_ROW_RULE_OPTIONS, MAX_SEATS_PER_DESK, RANDOM_STUDENT_COUNT_OPTIONS, applyLastRowRule, arrange, createClassroom, createSampleStudents, demoStudents, downloadStudentTemplate, exportPdf, exportStudentsCsv, exportWord, generateRandomStudents, getDefaultSchoolYear, getDeskSeatCount, getDisplayName, getSeats, legacyDemoStudentNames, normalizeGenderRatio, normalizeLastRowRule, parseStudents, studentsToCsv, uid } from './lib'
+import type { ArrangeMode, ArrangeScope, Classroom, LastRowRule, LayoutStyle, Student, ViewMode } from './types'
 
 const STORAGE_KEY = 'classroom-3d-data-v1'
 const PROFILE_KEY = 'classroom-3d-profile-v1'
@@ -30,6 +30,8 @@ function App() {
             deskSeats: storedRoom.deskSeats ?? {},
             teacherDeskSide: storedRoom.teacherDeskSide ?? 'right',
             columnGenderRatio: normalizeGenderRatio(storedRoom.columnGenderRatio),
+            lastRowRule: normalizeLastRowRule(storedRoom.lastRowRule),
+            schoolYear: storedRoom.schoolYear ?? getDefaultSchoolYear(),
           }
           const isLegacyDemo = room.students.length === legacyDemoStudentNames.length
             && legacyDemoStudentNames.every(name => room.students.some(student => student.name === name))
@@ -85,6 +87,7 @@ function App() {
   const room = rooms.find(r => r.id === activeId) ?? rooms[0]
   const seats = useMemo(() => getSeats(room), [room])
   const genderRatio = useMemo(() => normalizeGenderRatio(room.columnGenderRatio), [room.columnGenderRatio])
+  const lastRowRule = useMemo(() => normalizeLastRowRule(room.lastRowRule), [room.lastRowRule])
   const studentsById = useMemo(() => new Map(room.students.map(s => [s.id, s])), [room.students])
   const assignedIds = new Set(Object.values(room.assignments))
   const unassigned = room.students.filter(s => !assignedIds.has(s.id) && s.name.toLowerCase().includes(query.toLowerCase()))
@@ -283,6 +286,13 @@ function App() {
     const total = Math.ceil(changed.length / flightBatch) * gap + FLIGHT_DURATION + 120
     flightTimer.current = window.setTimeout(() => setFlights({}), total)
   }
+  /** Đổi quy ước dãy bàn cuối và áp dụng ngay cho sơ đồ hiện tại. */
+  const changeLastRowRule = (rule: LastRowRule) => {
+    const nextAssignments = applyLastRowRule({ ...room, lastRowRule: rule }, room.assignments, rule)
+    updateRoom({ lastRowRule: rule, assignments: nextAssignments })
+    startFlights(nextAssignments)
+    setToast(rule === 'none' ? 'Đã bỏ quy ước cho dãy bàn cuối' : `Đã áp dụng: ${LAST_ROW_RULE_LABELS[rule]}`)
+  }
   const runArrange = (mode: ArrangeMode, scope: ArrangeScope = 'all') => {
     const nextAssignments = arrange(room, mode, scope)
     updateRoom({ assignments: nextAssignments })
@@ -377,7 +387,7 @@ function App() {
         <div className="export-wrap">
           <button className="primary-button" onClick={() => setShowExport(!showExport)}><Download size={17} /> Xuất sơ đồ <ChevronDown size={15} /></button>
           {showExport && <div className="export-menu">
-            <button onClick={() => { exportPdf(room); setShowExport(false); setToast('Đã xuất PDF sơ đồ lớp') }}><FileDown size={15} /><span><strong>Xuất PDF</strong><small>Bản in giữ nguyên bố cục</small></span></button>
+            <button onClick={() => { exportPdf(room, { school: profile.school }); setShowExport(false); setToast('Đã xuất PDF sơ đồ lớp') }}><FileDown size={15} /><span><strong>Xuất PDF</strong><small>Bản in giữ nguyên bố cục</small></span></button>
             <button onClick={() => { exportWord(room); setShowExport(false); setToast('Đã xuất file Word để chỉnh sửa') }}><FileText size={15} /><span><strong>Xuất Word (.doc)</strong><small>Dạng bảng, dễ chỉnh sửa</small></span></button>
             <button onClick={exportStudentList}><FileSpreadsheet size={15} /><span><strong>Xuất danh sách (.csv)</strong><small>{room.students.length} học sinh kèm bàn · ghế</small></span></button>
             <small className="export-hint">Cả hai bản sơ đồ đều có bàn giáo viên ở {(room.teacherDeskSide ?? 'right') === 'right' ? 'bên phải' : 'bên trái'} bảng.</small>
@@ -421,6 +431,10 @@ function App() {
           <button onClick={() => runArrange('column')}><Shuffle size={15}/>Xáo theo hàng dọc ({genderRatio.male} nam : {genderRatio.female} nữ)</button>
           <div className="arrange-divider" />
           {([['name','Theo tên A–Z'],['performance','Xen kẽ học lực'],['gender','Xen kẽ giới tính'],['height','Thấp ngồi gần bảng']] as [ArrangeMode,string][]).map(([key, label]) => <button key={key} onClick={() => runArrange(key)}><Shuffle size={15}/>{label}</button>)}
+          <div className="arrange-divider" />
+          {/* Quy ước giới tính cho dãy bàn cuối, áp dụng ngay cho mọi kiểu sắp xếp */}
+          <strong className="with-icon"><Users size={13}/> Dãy bàn cuối</strong>
+          <div className="flight-options last-row-options">{LAST_ROW_RULE_OPTIONS.map(option => <button key={option} className={lastRowRule === option ? 'active' : ''} onClick={() => changeLastRowRule(option)}>{LAST_ROW_RULE_LABELS[option]}</button>)}</div>
           <div className="arrange-divider" />
           <strong className="with-icon"><Plane size={13}/> Hiệu ứng bay vào chỗ</strong>
           <div className="flight-options">{FLIGHT_BATCH_OPTIONS.map(option => <button key={option} className={flightBatch === option ? 'active' : ''} onClick={() => setFlightBatch(option)}>{option ? `${option} bạn` : 'Tắt'}</button>)}</div>
@@ -496,7 +510,7 @@ function App() {
     </main>
 
     {showSetup && <Modal title="Thiết lập lớp học" onClose={() => setShowSetup(false)}>
-      <div className="form-grid"><label>Tên lớp<input value={room.name} onChange={e => updateRoom({ name: e.target.value })}/></label><label>Giáo viên chủ nhiệm<input value={room.teacher} onChange={e => updateRoom({ teacher: e.target.value })}/></label><label>Số hàng<input type="number" min="1" max="8" value={room.rows} onChange={e => updateRoom({ rows: Math.max(1, Number(e.target.value)), assignments: {}, lockedSeats: [] })}/></label><label>Số cột<input type="number" min="1" max="8" value={room.columns} onChange={e => updateRoom({ columns: Math.max(1, Number(e.target.value)), assignments: {}, lockedSeats: [] })}/></label><label>Số ghế / bàn (mặc định)<input type="number" min="1" max={MAX_SEATS_PER_DESK} value={room.seatsPerDesk} onChange={e => updateRoom({ seatsPerDesk: Math.min(MAX_SEATS_PER_DESK, Math.max(1, Number(e.target.value) || 1)), deskSeats: {}, assignments: {}, lockedSeats: [] })}/></label><label>Kiểu bố cục<select value={room.layout} onChange={e => updateRoom({ layout: e.target.value as LayoutStyle, assignments: {}, lockedSeats: [] })}><option value="grid">Dạng lưới</option><option value="u-shape">Chữ U</option><option value="pairs">Nhóm đôi</option></select></label><label>Bàn giáo viên<select value={room.teacherDeskSide ?? 'right'} onChange={e => updateRoom({ teacherDeskSide: e.target.value as 'left' | 'right' })}><option value="right">Bên phải bảng</option><option value="left">Bên trái bảng</option></select></label><label>Tỉ lệ nam : nữ mỗi hàng dọc<span className="ratio-input"><input type="number" min="0" max="20" value={genderRatio.male} onChange={e => updateRoom({ columnGenderRatio: { ...genderRatio, male: Math.max(0, Number(e.target.value) || 0) } })}/><em>nam :</em><input type="number" min="0" max="20" value={genderRatio.female} onChange={e => updateRoom({ columnGenderRatio: { ...genderRatio, female: Math.max(0, Number(e.target.value) || 0) } })}/><em>nữ</em></span></label></div>
+      <div className="form-grid"><label>Tên lớp<input value={room.name} onChange={e => updateRoom({ name: e.target.value })}/></label><label>Giáo viên chủ nhiệm<input value={room.teacher} onChange={e => updateRoom({ teacher: e.target.value })}/></label><label>Số hàng<input type="number" min="1" max="8" value={room.rows} onChange={e => updateRoom({ rows: Math.max(1, Number(e.target.value)), assignments: {}, lockedSeats: [] })}/></label><label>Số cột<input type="number" min="1" max="8" value={room.columns} onChange={e => updateRoom({ columns: Math.max(1, Number(e.target.value)), assignments: {}, lockedSeats: [] })}/></label><label>Số ghế / bàn (mặc định)<input type="number" min="1" max={MAX_SEATS_PER_DESK} value={room.seatsPerDesk} onChange={e => updateRoom({ seatsPerDesk: Math.min(MAX_SEATS_PER_DESK, Math.max(1, Number(e.target.value) || 1)), deskSeats: {}, assignments: {}, lockedSeats: [] })}/></label><label>Kiểu bố cục<select value={room.layout} onChange={e => updateRoom({ layout: e.target.value as LayoutStyle, assignments: {}, lockedSeats: [] })}><option value="grid">Dạng lưới</option><option value="u-shape">Chữ U</option><option value="pairs">Nhóm đôi</option></select></label><label>Bàn giáo viên<select value={room.teacherDeskSide ?? 'right'} onChange={e => updateRoom({ teacherDeskSide: e.target.value as 'left' | 'right' })}><option value="right">Bên phải bảng</option><option value="left">Bên trái bảng</option></select></label><label>Tỉ lệ nam : nữ mỗi hàng dọc<span className="ratio-input"><input type="number" min="0" max="20" value={genderRatio.male} onChange={e => updateRoom({ columnGenderRatio: { ...genderRatio, male: Math.max(0, Number(e.target.value) || 0) } })}/><em>nam :</em><input type="number" min="0" max="20" value={genderRatio.female} onChange={e => updateRoom({ columnGenderRatio: { ...genderRatio, female: Math.max(0, Number(e.target.value) || 0) } })}/><em>nữ</em></span></label><label>Năm học<input value={room.schoolYear ?? ''} placeholder={getDefaultSchoolYear()} onChange={e => updateRoom({ schoolYear: e.target.value })}/></label><label>Dãy bàn cuối<select value={lastRowRule} onChange={e => changeLastRowRule(normalizeLastRowRule(e.target.value))}>{LAST_ROW_RULE_OPTIONS.map(option => <option key={option} value={option}>{LAST_ROW_RULE_LABELS[option]}</option>)}</select></label></div>
       <p className="modal-help">Số ghế mỗi bàn có thể khác nhau — chỉnh riêng từng bàn bên dưới. Tỉ lệ {DEFAULT_COLUMN_GENDER_RATIO.male}:{DEFAULT_COLUMN_GENDER_RATIO.female} là mặc định cho chế độ “Xáo theo hàng dọc”.</p>
       <div className="desk-seat-grid">{Array.from({ length: room.rows * room.columns }, (_, desk) => <label key={desk}><span>Bàn {desk + 1}</span><input type="number" min="1" max={MAX_SEATS_PER_DESK} value={getDeskSeatCount(room, desk)} onChange={e => {
         const value = Math.min(MAX_SEATS_PER_DESK, Math.max(1, Number(e.target.value) || 1))

@@ -1,8 +1,21 @@
 import { jsPDF } from 'jspdf'
-import type { ArrangeMode, ArrangeScope, Classroom, ColumnGenderRatio, SeatPosition, Student } from './types'
+import type { ArrangeMode, ArrangeScope, Classroom, ColumnGenderRatio, LastRowRule, SeatPosition, Student } from './types'
 
 export const DEFAULT_COLUMN_GENDER_RATIO: ColumnGenderRatio = { male: 4, female: 6 }
 export const MAX_SEATS_PER_DESK = 6
+
+/** Nhãn hiển thị của từng quy ước giới tính cho dãy bàn cuối. */
+export const LAST_ROW_RULE_LABELS: Record<LastRowRule, string> = {
+  none: 'Không áp dụng',
+  male: 'Dãy cuối toàn nam',
+  female: 'Dãy cuối toàn nữ',
+  mixed: 'Dãy cuối nam nữ xen kẽ',
+}
+
+export const LAST_ROW_RULE_OPTIONS = Object.keys(LAST_ROW_RULE_LABELS) as LastRowRule[]
+
+export const normalizeLastRowRule = (rule?: string): LastRowRule =>
+  LAST_ROW_RULE_OPTIONS.includes(rule as LastRowRule) ? rule as LastRowRule : 'none'
 
 export const uid = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
 
@@ -117,8 +130,15 @@ export function createClassroom(name = 'Lớp 10A1', students?: Student[]): Clas
     students: students ?? demoStudents.map(student => ({ ...student, id: uid() })),
     assignments: {}, lockedSeats: [], deskSeats: {},
     teacherDeskSide: 'right', columnGenderRatio: { ...DEFAULT_COLUMN_GENDER_RATIO },
+    lastRowRule: 'none', schoolYear: getDefaultSchoolYear(),
     updatedAt: new Date().toISOString(),
   }
+}
+
+/** Năm học gợi ý theo thời điểm hiện tại (năm học mới bắt đầu từ tháng 8). */
+export function getDefaultSchoolYear(date = new Date()) {
+  const startYear = date.getMonth() >= 7 ? date.getFullYear() : date.getFullYear() - 1
+  return `${startYear} – ${startYear + 1}`
 }
 
 /** Số ghế thực tế của một bàn: ưu tiên số ghế riêng của bàn, nếu không lấy mặc định của lớp. */
@@ -229,9 +249,9 @@ function arrangeByColumn(room: Classroom, availableSeats: SeatPosition[], availa
   const next: Record<string, string> = { ...fixedAssignments }
   const columns = [...new Set(availableSeats.map(seat => seat.column))].sort((a, b) => a - b)
   // Ghế của từng dãy, đã trải đều theo từng lượt ghế (mỗi bàn 1 bạn trước, dư mới tới bạn thứ hai)
-  const lanes = columns.map(column => spreadSeats(availableSeats
+  const lanes = columns.map(column => availableSeats
     .filter(seat => seat.column === column)
-    .sort((a, b) => a.row - b.row || a.deskIndex - b.deskIndex || a.seatIndex - b.seatIndex), true))
+    .sort((a, b) => a.row - b.row || a.deskIndex - b.deskIndex || a.seatIndex - b.seatIndex))
   // Chia đều học sinh cho các dãy để dãy cuối không bị bỏ trống khi lớp chưa kín chỗ
   const quotas = shareByLane(lanes.map(lane => lane.length), availableStudents.length)
   let maleCarry = 0
@@ -253,7 +273,74 @@ function arrangeByColumn(room: Classroom, availableSeats: SeatPosition[], availa
   return next
 }
 
+/**
+ * Áp dụng quy ước giới tính cho dãy bàn cuối (dãy xa bảng nhất) sau khi đã sắp xếp:
+ * đổi chỗ với các bàn phía trên hoặc lấy thêm học sinh còn chờ để dãy cuối đúng yêu cầu.
+ * Các ghế đang khóa luôn được giữ nguyên.
+ */
+export function applyLastRowRule(room: Classroom, assignments: Record<string, string>, rule: LastRowRule): Record<string, string> {
+  if (rule === 'none' || room.rows < 1) return assignments
+  const seats = getSeats(room)
+  const locked = new Set(room.lockedSeats ?? [])
+  // `row = 0` nằm phía trước; khi bảng ở phía sau, dãy xa bảng nhất là row 0.
+  const lastRow = room.boardSide === 'back' ? 0 : room.rows - 1
+  const next = { ...assignments }
+  const studentsById = new Map(room.students.map(student => [student.id, student]))
+  const targetSeats = seats
+    .filter(seat => seat.row === lastRow && !locked.has(seat.id))
+    .sort((a, b) => a.column - b.column || a.seatIndex - b.seatIndex)
+  if (!targetSeats.length) return assignments
+  /** Ghế có thể mượn người để đổi: mọi ghế không khóa nằm ngoài dãy cuối. */
+  const donorSeats = seats.filter(seat => seat.row !== lastRow && !locked.has(seat.id))
+  const wantedFor = (index: number): Student['gender'] =>
+    rule === 'male' ? 'Nam' : rule === 'female' ? 'Nữ' : index % 2 === 0 ? 'Nam' : 'Nữ'
+
+  targetSeats.forEach((seat, index) => {
+    const wanted = wantedFor(index)
+    const current = studentsById.get(next[seat.id])
+    if (current?.gender === wanted) return
+    // Ưu tiên đổi chỗ với một bạn đúng giới tính đang ngồi ở các bàn trên
+    const donorSeat = donorSeats.find(candidate => studentsById.get(next[candidate.id])?.gender === wanted)
+    if (donorSeat) {
+      const donorId = next[donorSeat.id]
+      if (current) next[donorSeat.id] = current.id
+      else delete next[donorSeat.id]
+      next[seat.id] = donorId
+      return
+    }
+    // Không còn ai để đổi thì lấy từ danh sách chưa xếp
+    const seatedIds = new Set(Object.values(next))
+    const waiting = room.students.find(student => student.gender === wanted && !seatedIds.has(student.id))
+    if (!waiting) return
+    if (current) {
+      // Nhường ghế cho bạn đúng giới tính, bạn cũ chuyển lên ghế trống phía trên (nếu có)
+      const freeSeat = donorSeats.find(candidate => next[candidate.id] === undefined)
+      if (freeSeat) next[freeSeat.id] = current.id
+      else return
+    }
+    next[seat.id] = waiting.id
+  })
+  return next
+}
+
 export function arrange(room: Classroom, mode: ArrangeMode, scope: ArrangeScope = 'all'): Record<string, string> {
+  return applyLastRowRule(room, arrangeSeats(room, mode, scope), normalizeLastRowRule(room.lastRowRule))
+}
+
+/** Ba hàng gần bảng nhất được xếp kín từng bàn (ghế 1 rồi ghế 2) trước các hàng còn lại. */
+function prioritizeFrontRows(room: Classroom, seats: SeatPosition[]) {
+  const frontRows = Array.from({ length: Math.min(3, room.rows) }, (_, index) =>
+    room.boardSide === 'back' ? room.rows - 1 - index : index,
+  )
+  const isFrontRow = new Set(frontRows)
+  const compareByDesk = (a: SeatPosition, b: SeatPosition) =>
+    a.row - b.row || a.column - b.column || a.seatIndex - b.seatIndex
+  const front = seats.filter(seat => isFrontRow.has(seat.row)).sort(compareByDesk)
+  const remaining = seats.filter(seat => !isFrontRow.has(seat.row))
+  return [...front, ...spreadSeats(remaining, true)]
+}
+
+function arrangeSeats(room: Classroom, mode: ArrangeMode, scope: ArrangeScope = 'all'): Record<string, string> {
   const seats = getSeats(room)
   const locked = new Set(room.lockedSeats ?? [])
   const fixedAssignments = Object.fromEntries(Object.entries(room.assignments).filter(([seatId]) => locked.has(seatId)))
@@ -269,7 +356,9 @@ export function arrange(room: Classroom, mode: ArrangeMode, scope: ArrangeScope 
     const waiting = shuffle(availableStudents.filter(student => !assignedIds.has(student.id)))
     // Trải đều trong dãy: mỗi bàn nhận 1 bạn trước, dư mới xếp bạn thứ hai
     const lanes = Array.from({ length: room.columns }, (_, column) =>
-      spreadSeats(availableSeats.filter(seat => seat.column === column), true))
+      availableSeats
+        .filter(seat => seat.column === column)
+        .sort((a, b) => a.row - b.row || a.deskIndex - b.deskIndex || a.seatIndex - b.seatIndex))
     const laneStudentLists = lanes.map(laneSeats => {
       const laneIds = new Set(laneSeats.map(seat => room.assignments[seat.id]).filter(Boolean))
       return shuffle(availableStudents.filter(student => laneIds.has(student.id)))
@@ -303,9 +392,8 @@ export function arrange(room: Classroom, mode: ArrangeMode, scope: ArrangeScope 
     while (groups.some(g => g.length)) groups.forEach(g => { const item = g.shift(); if (item) remaining.push(item) })
   }
   const ordered = [...priority, ...remaining]
-  // Chế độ ngẫu nhiên: rải học sinh khắp lớp (kể cả các dãy cuối), mỗi bàn 1 người trước rồi mới tới người thứ hai.
-  // Các tiêu chí còn lại (tên, học lực, chiều cao…) giữ thứ tự ghế gốc để logic "gần bảng" không bị đổi.
-  const targetSeats = mode === 'random' ? spreadSeats(availableSeats, true) : availableSeats
+  // Ba hàng gần bảng nhất: xếp kín ghế 1 rồi ghế 2 của từng bàn trước.
+  const targetSeats = prioritizeFrontRows(room, availableSeats)
   return {
     ...fixedAssignments,
     ...Object.fromEntries(targetSeats.slice(0, ordered.length).map((seat, index) => [seat.id, ordered[index].id])),
@@ -371,7 +459,15 @@ export function parseStudents(text: string): StudentImportResult {
   return { students, errors }
 }
 
-export function exportPdf(room: Classroom) {
+export interface PdfExportOptions {
+  /** Tên trường giữ lại để tương thích lời gọi cũ; bản sơ đồ tối giản không in thông tin này. */
+  school?: string
+}
+
+/**
+ * Xuất sơ đồ tối giản: tiêu đề lớp, bàn học (chỉ tên học sinh), BẢNG và BÀN GIÁO VIÊN ở cuối sơ đồ.
+ */
+export function exportPdf(room: Classroom, options: PdfExportOptions = {}) {
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
   const seats = getSeats(room)
   const students = new Map(room.students.map(s => [s.id, s]))
@@ -379,64 +475,86 @@ export function exportPdf(room: Classroom) {
   canvas.width = 1754; canvas.height = 1240
   const ctx = canvas.getContext('2d')!
   ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height)
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#263430'
-  ctx.font = '700 54px Arial, sans-serif'; ctx.fillText(room.name, canvas.width / 2, 70)
-  ctx.font = '28px Arial, sans-serif'; ctx.fillStyle = '#63706b'; ctx.fillText(`Giáo viên chủ nhiệm: ${room.teacher}`, canvas.width / 2, 120)
+  const margin = 64
   const teacherSide = room.teacherDeskSide ?? 'right'
-  ctx.fillStyle = '#244f46'; roundedRect(ctx, 250, 160, 1000, 62, 12); ctx.fill()
-  ctx.font = '700 30px Arial, sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('BẢNG', 750, 192)
-  drawTeacherDesk(ctx, teacherSide === 'right' ? 1300 : 60, 158, room.teacher)
-  const maxSeatCount = Math.max(...seats.map(seat => seat.seatCount), 1)
-  /** Lối đi giữa hai dãy bàn chỉ giữ ở mức tối thiểu để dành chỗ ghi tên. */
-  const aisleGap = 14
-  const seatGap = 6
-  const usableWidth = canvas.width - 200
-  const seatWidth = Math.min(170, Math.max(60,
-    (usableWidth - (room.columns - 1) * aisleGap - room.columns * (maxSeatCount - 1) * seatGap) / Math.max(1, room.columns * maxSeatCount)))
-  const deskWidth = seatWidth * maxSeatCount + (maxSeatCount - 1) * seatGap
-  const totalWidth = room.columns * deskWidth + (room.columns - 1) * aisleGap
-  const startX = Math.max(60, (canvas.width - totalWidth) / 2)
-  const minX = Math.min(...seats.map(s => s.x)); const maxX = Math.max(...seats.map(s => s.x))
-  const minZ = Math.min(...seats.map(s => s.z)); const maxZ = Math.max(...seats.map(s => s.z))
-  const spanX = Math.max(1, totalWidth - deskWidth)
-  seats.forEach(seat => {
-    const deskLeft = startX + ((seat.x - minX) / Math.max(1, maxX - minX)) * spanX
-    const usedWidth = seat.seatCount * seatWidth + (seat.seatCount - 1) * seatGap
-    const x = deskLeft + (deskWidth - usedWidth) / 2 + seat.seatIndex * (seatWidth + seatGap)
-    const y = 290 + ((seat.z - minZ) / Math.max(1, maxZ - minZ)) * 720
-    const student = students.get(room.assignments[seat.id])
-    const isLocked = (room.lockedSeats ?? []).includes(seat.id)
-    ctx.fillStyle = student ? '#e0eee5' : '#f4f4f1'; roundedRect(ctx, x, y, seatWidth, 82, 12); ctx.fill()
-    ctx.strokeStyle = isLocked ? '#d47758' : '#aeb9b4'; ctx.lineWidth = 3; ctx.stroke()
-    if (student?.priority) drawPdfIconBadge(ctx, x + 13, y + 13, 'star', '#c8882d', '#fff4d9')
-    if (isLocked) drawPdfIconBadge(ctx, x + seatWidth - 13, y + 13, 'lock', '#b45d45', '#fbe7df')
-    // Ghế chỉ ghi tên đệm + tên, phần thông tin chi tiết đã có ở bảng danh sách.
-    ctx.fillStyle = student ? '#244f46' : '#929b97'; ctx.font = '700 20px Arial, sans-serif'
-    wrapText(ctx, student ? getDisplayName(student.name) : 'Ghế trống', x + seatWidth / 2, y + (student?.note ? 30 : 41), seatWidth - 22, 22)
-    if (student?.note) drawStudentInfoBadge(ctx, student.note, x + 9, y + 57, seatWidth - 18)
-  })
-  ctx.fillStyle = '#6f7975'; ctx.font = '20px Arial, sans-serif'
-  ctx.fillText(`Sĩ số: ${room.students.length}  •  Đã xếp: ${Object.keys(room.assignments).length}  •  Sức chứa: ${seats.length}`, canvas.width / 2, 1148)
-  drawPdfLegend(ctx, canvas.width / 2, 1192)
+
+  // ----- Lưới bàn: cột = dãy, hàng = bàn tính từ bảng trở ra -----
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'center'
+  ctx.font = '700 52px Arial, sans-serif'; ctx.fillStyle = '#1f2e29'
+  ctx.fillText(`SƠ ĐỒ LỚP ${room.name.toUpperCase()}`, canvas.width / 2, 110)
+
+  // ----- BẢNG và bàn giáo viên ở cuối sơ đồ -----
+  const teacherDeskWidth = 394
+  const boardTop = 1080
+  const boardHeight = 66
+  const boardWidth = Math.max(420, canvas.width - 2 * margin - teacherDeskWidth - 40)
+  const boardX = teacherSide === 'right' ? margin : canvas.width - margin - boardWidth
+  ctx.fillStyle = '#244f46'; roundedRect(ctx, boardX, boardTop, boardWidth, boardHeight, 12); ctx.fill()
+  ctx.font = '700 34px Arial, sans-serif'; ctx.fillStyle = '#fff'
+  ctx.fillText('BẢNG', boardX + boardWidth / 2, boardTop + boardHeight / 2 + 1)
+  drawTeacherDesk(ctx, teacherSide === 'right' ? canvas.width - margin - teacherDeskWidth : margin, boardTop)
+  // ----- Lưới bàn: cột = dãy, hàng = bàn tính từ bảng trở ra -----
+  const gridTop = 208
+  const gridBottom = 1026
+  const columnCount = Math.max(1, room.columns)
+  const rowCount = Math.max(1, room.rows)
+  const laneLabelHeight = 34
+  const rowLabelWidth = 96
+  const aisleGap = 22
+  const rowGap = 16
+  const deskWidth = (canvas.width - 2 * margin - rowLabelWidth - (columnCount - 1) * aisleGap) / columnCount
+  const rowHeight = (gridBottom - gridTop - laneLabelHeight - (rowCount - 1) * rowGap) / rowCount
+  const gridLeft = margin + rowLabelWidth
+  const deskLeftOf = (column: number) => gridLeft + column * (deskWidth + aisleGap)
+  const deskTopOf = (row: number) => gridTop + laneLabelHeight + row * (rowHeight + rowGap)
+
+  for (let visualRow = 0; visualRow < rowCount; visualRow++) {
+    const row = rowCount - 1 - visualRow
+    const top = deskTopOf(visualRow)
+    for (let column = 0; column < columnCount; column++) {
+      const deskIndex = row * columnCount + column
+      const deskSeats = seats.filter(seat => seat.deskIndex === deskIndex)
+      const left = deskLeftOf(column)
+      ctx.fillStyle = '#f7f7f4'; roundedRect(ctx, left, top, deskWidth, rowHeight, 12); ctx.fill()
+      ctx.strokeStyle = '#c4ccc8'; ctx.lineWidth = 2; ctx.stroke()
+      if (!deskSeats.length) continue
+      const seatGap = 8
+      const seatWidth = (deskWidth - 16 - (deskSeats.length - 1) * seatGap) / deskSeats.length
+      deskSeats.forEach(seat => {
+        const seatX = left + 8 + seat.seatIndex * (seatWidth + seatGap)
+        drawPdfSeat(ctx, seatX, top + 8, seatWidth, rowHeight - 16, students.get(room.assignments[seat.id]))
+      })
+    }
+  }
+
+  // ----- Xuất sơ đồ tối giản: không thống kê, chú thích hoặc phần ký tên -----
+
   pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 297, 210, undefined, 'FAST')
-  pdf.save(`so-do-${room.name.toLowerCase().replace(/\s+/g, '-')}.pdf`)
+  pdf.save(`so-do-${slugify(room.name)}.pdf`)
 }
 
-/** Vẽ bàn giáo viên (mặc định đặt bên phải bảng) cho bản PDF. */
-function drawTeacherDesk(ctx: CanvasRenderingContext2D, x: number, y: number, teacher: string) {
+/** Vẽ một ghế trong bản PDF: chỉ hiển thị tên học sinh. */
+function drawPdfSeat(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, student: Student | undefined) {
+  ctx.fillStyle = student ? '#e4f0e8' : '#fbfbf9'; roundedRect(ctx, x, y, width, height, 10); ctx.fill()
+  ctx.strokeStyle = '#b3bdb8'; ctx.lineWidth = 2.5; ctx.stroke()
+  const label = student?.name ?? ''
+  const fontSize = getFittingFontSize(ctx, label, width - 24, Math.min(32, Math.max(17, Math.floor(height * .32))), 13)
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#1f4a41'
+  ctx.font = `700 ${fontSize}px Arial, sans-serif`
+  wrapText(ctx, label, x + width / 2, y + height / 2, width - 20, fontSize + 5)
+}
+
+/** Vẽ bàn giáo viên cho bản PDF. */
+function drawTeacherDesk(ctx: CanvasRenderingContext2D, x: number, y: number) {
   const width = 394
   const height = 70
   ctx.fillStyle = '#f3ece2'; roundedRect(ctx, x, y, width, height, 12); ctx.fill()
   ctx.strokeStyle = '#b98b60'; ctx.lineWidth = 3; ctx.stroke()
-  ctx.fillStyle = '#8f6547'; roundedRect(ctx, x + 14, y + 15, 60, 40, 8); ctx.fill()
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
-  ctx.fillStyle = '#7a5a3d'; ctx.font = '700 22px Arial, sans-serif'
-  ctx.fillText('BÀN GIÁO VIÊN', x + 88, y + 27)
-  const name = teacher?.trim() || 'Chưa có GVCN'
-  ctx.fillStyle = '#94714f'
-  ctx.font = `${getFittingFontSize(ctx, name, width - 104, 18, 11)}px Arial, sans-serif`
-  ctx.fillText(name, x + 88, y + 51)
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#7a5a3d'; ctx.font = '700 22px Arial, sans-serif'
+  ctx.fillText('BÀN GIÁO VIÊN', x + width / 2, y + height / 2)
 }
 
 const escapeHtml = (value: string) => value
@@ -479,7 +597,6 @@ table.list td.num { text-align: center; }
 export function exportWord(room: Classroom) {
   const seats = getSeats(room)
   const students = new Map(room.students.map(student => [student.id, student]))
-  const locked = new Set(room.lockedSeats ?? [])
   const teacherSide = room.teacherDeskSide ?? 'right'
   const maxSeatCount = Math.max(...seats.map(seat => seat.seatCount), 1)
   const totalColumns = Math.max(1, room.columns)
@@ -504,54 +621,35 @@ export function exportWord(room: Classroom) {
 
   const seatCell = (seatId: string, span: number) => {
     const student = students.get(room.assignments[seatId])
-    const isLocked = locked.has(seatId)
     const span2 = span > 1 ? ` colspan="${span}"` : ''
-    if (!student) return `<td class="seat-blank"${span2}><p class="seat-empty">Ghế trống</p></td>`
-    const note = student.note?.trim()
-    const presentation = note ? getStudentNotePresentation(note) : undefined
-    const marks = [student.priority ? '★' : '', isLocked ? '⚿' : ''].filter(Boolean).join(' ')
-    // Chỉ ghi tên đệm + tên để ô ghế thoáng, không kèm giới tính/chiều cao/điểm.
-    return `<td class="${isLocked ? 'seat-locked' : 'seat'}"${span2}>`
-      + `<p class="seat-name" title="${escapeHtml(student.name)}">${marks ? `${marks} ` : ''}${escapeHtml(getDisplayName(student.name))}</p>`
-      + (note && presentation
-        ? `<p class="seat-note" style="color:${presentation.color};background:${presentation.background}">${escapeHtml(abbreviateStudentNote(note))}</p>`
-        : '')
-      + '</td>'
+    return `<td class="${student ? 'seat' : 'seat-blank'}"${span2}><p class="seat-name">${student ? escapeHtml(student.name) : ''}</p></td>`
   }
 
-  const deskRows = Array.from({ length: room.rows }, (_, row) => {
+  const deskRows = Array.from({ length: room.rows }, (_, visualRow) => {
+    const row = room.rows - 1 - visualRow
     const titleCells: string[] = []
     const seatCells: string[] = []
     for (let column = 0; column < totalColumns; column++) {
       const deskIndex = row * totalColumns + column
       const deskSeats = seats.filter(seat => seat.deskIndex === deskIndex)
       if (column) { titleCells.push(aisleCell); seatCells.push(aisleCell) }
-      titleCells.push(`<td class="desk-title" colspan="${maxSeatCount}">Bàn ${deskIndex + 1} · ${deskSeats.length} ghế</td>`)
+      titleCells.push(`<td class="desk-title" colspan="${maxSeatCount}">&nbsp;</td>`)
       if (deskSeats.length) deskSeats.forEach(seat => seatCells.push(seatCell(seat.id, spanFor(deskSeats.length, seat.seatIndex))))
-      else seatCells.push(`<td class="seat-blank" colspan="${maxSeatCount}"><p class="seat-empty">Không có ghế</p></td>`)
+      else seatCells.push(`<td class="seat-blank" colspan="${maxSeatCount}"></td>`)
     }
     return `<tr>${titleCells.join('')}</tr><tr>${seatCells.join('')}</tr>`
   }).join('')
 
-  // Bảng và bàn giáo viên phải phủ đúng `gridColumns` cột; lớp quá hẹp thì xếp thành hai hàng.
+  // Bảng và bàn giáo viên đặt ở cuối sơ đồ như hướng nhìn trong mẫu.
   const teacherSpan = Math.min(Math.max(1, gridColumns - 1), Math.max(maxSeatCount, Math.round(gridColumns * 0.22)))
-  const teacherBody = `<p class="teacher-title">BÀN GIÁO VIÊN</p><p class="teacher-name">${escapeHtml(room.teacher || 'Chưa có GVCN')}</p>`
+  const teacherBody = '<p class="teacher-title">BÀN GIÁO VIÊN</p>'
   const stacked = gridColumns < 2 || gridColumns - teacherSpan < 1
   const teacherCell = `<td class="teacher-desk" colspan="${stacked ? gridColumns : teacherSpan}">${teacherBody}</td>`
   const boardCell = `<td class="board" colspan="${stacked ? gridColumns : gridColumns - teacherSpan}">BẢNG</td>`
-  const headRow = stacked
+  const footerRow = stacked
     ? (teacherSide === 'right' ? `<tr>${boardCell}</tr><tr>${teacherCell}</tr>` : `<tr>${teacherCell}</tr><tr>${boardCell}</tr>`)
     : (teacherSide === 'right' ? `<tr>${boardCell}${teacherCell}</tr>` : `<tr>${teacherCell}${boardCell}</tr>`)
   const spacerRow = `<tr><td class="row-gap" colspan="${gridColumns}">&nbsp;</td></tr>`
-
-  const studentRows = room.students.map((student, index) => {
-    const seatId = Object.keys(room.assignments).find(key => room.assignments[key] === student.id)
-    const [deskIndex, seatIndex] = seatId ? seatId.split('-').map(Number) : []
-    const place = seatId ? `Bàn ${deskIndex + 1} · Ghế ${seatIndex + 1}` : 'Chưa xếp'
-    return `<tr><td class="num">${index + 1}</td><td>${escapeHtml(student.name)}</td><td class="num">${escapeHtml(student.gender)}</td>`
-      + `<td class="num">${student.height}</td><td class="num">${student.weight}</td><td class="num">${student.performance.toFixed(1)}</td>`
-      + `<td class="num">${student.priority ? 'Ưu tiên' : ''}</td><td>${escapeHtml(student.note ?? '')}</td><td>${place}</td></tr>`
-  }).join('')
 
   const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
 <head><meta charset="utf-8"><meta name="ProgId" content="Word.Document"><title>${escapeHtml(room.name)}</title>
@@ -559,13 +657,8 @@ export function exportWord(room: Classroom) {
 <style>${wordStyles}</style></head>
 <body>
 <div class="WordSection1">
-<h1>${escapeHtml(room.name)}</h1>
-<p class="sub">Giáo viên chủ nhiệm: ${escapeHtml(room.teacher || 'Chưa có GVCN')} · Xuất ngày ${new Date().toLocaleDateString('vi')}</p>
-<table class="map" width="100%" style="width:100%;table-layout:fixed"><colgroup>${cols}</colgroup>${headRow}${spacerRow}${deskRows}</table>
-<p class="foot">Sĩ số: ${room.students.length} · Đã xếp: ${Object.keys(room.assignments).length} · Sức chứa: ${seats.length} · Tối đa ${maxSeatCount} ghế/bàn</p>
-<p class="legend">★ Ưu tiên gần bảng · ⚿ Chỗ cố định · Ghi chú rút gọn theo màu: vai trò, hoạt động, học tập, thể chất</p>
-<p class="section-title">Danh sách học sinh</p>
-<table class="list" width="100%" style="width:100%"><thead><tr><th>STT</th><th>Họ tên</th><th>Giới tính</th><th>Cao (cm)</th><th>Nặng (kg)</th><th>Điểm</th><th>Ưu tiên</th><th>Ghi chú</th><th>Vị trí</th></tr></thead><tbody>${studentRows}</tbody></table>
+<h1>SƠ ĐỒ ${escapeHtml(room.name)}</h1>
+<table class="map" width="100%" style="width:100%;table-layout:fixed"><colgroup>${cols}</colgroup>${deskRows}${spacerRow}${footerRow}</table>
 </div>
 </body></html>`
 

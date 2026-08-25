@@ -313,7 +313,13 @@ function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, handleRef, fligh
         <mesh position={[0, .32, 0]} castShadow><boxGeometry args={[.75, .08, .68]} /><meshStandardMaterial color="#3d5b53" /></mesh>
         <mesh position={[0, .7, -.3]} castShadow><boxGeometry args={[.75, .68, .09]} /><meshStandardMaterial color="#3d5b53" /></mesh>
       </group>
-      <Html center position={[0, 1.75, 0]} distanceFactor={10}><div className="teacher-label">Bàn giáo viên{room.teacher ? ` · ${room.teacher}` : ''}</div></Html>
+      {/* Nhãn bàn giáo viên tách hai dòng để tên GVCN không bị bóp nhỏ theo chiều ngang */}
+      <Html center position={[0, 1.75, 0]} distanceFactor={12}>
+        <div className="teacher-label teacher-label--stacked">
+          <span className="teacher-label__role">Bàn giáo viên</span>
+          {room.teacher && <span className="teacher-label__name">{room.teacher}</span>}
+        </div>
+      </Html>
     </group>
     <group position={[(room.teacherDeskSide ?? 'right') === 'right' ? -sizeX / 2 + 1 : sizeX / 2 - 1, .7, -sizeZ / 2 + 1.2]}>
       <mesh position={[0, .8, 0]}><sphereGeometry args={[.7, 12, 12]} /><meshStandardMaterial color="#678b54" /></mesh>
