@@ -480,7 +480,7 @@ function App() {
                 onClick={() => selectOrPlace(seat.id)}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectOrPlace(seat.id) } }}>
                 {isLocked && <div className="seat-lock" title="Vị trí cố định"><Lock size={11}/></div>}
-                {student ? <><StudentAvatar student={student} mini/><span title={student.name}>{getDisplayName(student.name)}</span></> : <><Plus size={16}/><span>Ghế trống</span></>}
+                {student ? <><StudentAvatar student={student} mini/><span className="seat-name-2d" title={student.role ? `${student.name} · ${student.role}` : student.name}>{getDisplayName(student.name)}</span>{student.role && <span className="seat-role-2d" title={student.role}>{student.role}</span>}</> : <><Plus size={16}/><span>Ghế trống</span></>}
               </div>})}</div></div>)}
           </div>}
           <div className="legend"><span><i className="assigned-dot"/> Đã gán: {Object.keys(room.assignments).length}</span><span><i className="locked-dot"/> Cố định: {room.lockedSeats?.length ?? 0}</span><span><i className="empty-dot"/> Còn trống: {Math.max(0, seats.length - Object.keys(room.assignments).length)}</span><span className="capacity">Sức chứa <strong>{seats.length}</strong></span></div>

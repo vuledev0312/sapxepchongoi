@@ -187,7 +187,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .seat-2d[draggable="true"]:active, .student-card:not(.is-assigned):active { cursor: grabbing; }
 .seat-2d.drop-target { border: 2px solid var(--orange); background: #fff2ec; transform: scale(1.04); box-shadow: 0 5px 16px #b7634433; }
 .seat-2d.selected-student { outline: 3px solid #34736655; outline-offset: 2px; }
-.seat-2d span { font-size: 7px; max-width: 62px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.seat-2d small { font-size: 6px; color: #84908b; }
+.seat-2d span { font-size: 10px; max-width: 78px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.seat-2d small { font-size: 6px; color: #84908b; }
+.seat-2d .seat-name-2d { font-weight: 700; }
+.seat-2d .seat-role-2d { font-size: 8px; font-weight: 700; color: #8d5546; max-width: 82px; margin-top: 1px; }
 .mini-avatar { width: 20px; height: 20px; border-radius: 50%; color: #fff; background: var(--green-2); display: grid; place-items: center; font-size: 8px; }
 /* Hiệu ứng học sinh bay vào chỗ (chế độ 2D) */
 .seat-2d.flying { animation-name: seat-fly-in; animation-timing-function: cubic-bezier(.22, .9, .3, 1); animation-fill-mode: both; z-index: 4; }

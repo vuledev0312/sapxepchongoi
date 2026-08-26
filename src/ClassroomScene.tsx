@@ -183,8 +183,9 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
 }) {
   const isFirst = seat.seatIndex === 0
   const student = students.get(assignments[seat.id])
-  // Bề rộng mặt bàn nở theo khoảng cách ghế để hai ghế và nhãn tên không đè lên nhau.
-  const deskWidth = 1.2 + seat.seatCount * (SEAT_SPACING + 0.35)
+  // Bề rộng mặt bàn chỉ cần phủ vừa các ghế (khoảng cách ghế giữ nguyên) cộng một chút lề,
+  // nên rút ngắn lại để bàn không còn thừa dài ở hai đầu.
+  const deskWidth = Math.max(1.7, (seat.seatCount - 1) * SEAT_SPACING + 1.7)
   const offset = seat.seatIndex - (seat.seatCount - 1) / 2
   const legX = deskWidth / 2 - 0.3
   const isDragSource = drag.fromSeatId === seat.id
@@ -296,8 +297,8 @@ function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, handleRef, fligh
   }, [dragFromSeatId])
 
   const maxSeatCount = Math.max(...seats.map(seat => seat.seatCount), 1)
-  // Hệ số 2.5 khớp với stepX trong getSeats (lib.ts) để nền lớp đủ rộng cho các bàn đã giãn ra.
-  const sizeX = Math.max(14, room.columns * (3.6 + maxSeatCount * 2.5) + 6)
+  // Hệ số 1.4 khớp với stepX trong getSeats (lib.ts) để nền lớp co lại theo các dãy bàn đã thu hẹp.
+  const sizeX = Math.max(14, room.columns * (2.8 + maxSeatCount * 1.4) + 6)
   const sizeZ = Math.max(12, room.rows * 4.4 + 4)
   const teacherX = (room.teacherDeskSide ?? 'right') === 'right' ? sizeX / 2 - 1.8 : -sizeX / 2 + 1.8
   return <>

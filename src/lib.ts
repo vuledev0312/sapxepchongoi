@@ -151,11 +151,10 @@ export function getDeskSeatCount(room: Classroom, deskIndex: number) {
 export function getSeats(room: Classroom): SeatPosition[] {
   const seats: SeatPosition[] = []
   const maxSeatCount = Math.max(...Array.from({ length: room.rows * room.columns }, (_, desk) => getDeskSeatCount(room, desk)), 1)
-  // Nới rộng khoảng cách giữa các bàn để nhãn tên (name-tag) của bàn cạnh nhau
-  // không tràn ngang chồng lên nhau. Hệ số theo số ghế/bàn để bàn càng nhiều ghế càng giãn rộng.
-  // Lưu ý: hệ số 2.5 phải khớp với SEAT_SPACING (2.3) trong ClassroomScene.tsx — khi hai học sinh
-  // cùng bàn được tách rộng ra hai phía thì khoảng cách giữa các bàn cũng phải giãn theo để không đè.
-  const stepX = 3.6 + maxSeatCount * 2.5
+  // Khoảng cách tâm–tâm giữa các dãy bàn (cột). Đặt vừa đủ để khe hở giữa các dãy gọn lại
+  // nhưng bàn/nhãn tên của hai dãy cạnh nhau vẫn không đè lên nhau.
+  // Hệ số 1.4 khớp với bề rộng bàn đã rút ngắn ((seatCount-1)*SEAT_SPACING + 1.7) trong ClassroomScene.tsx.
+  const stepX = 2.8 + maxSeatCount * 1.4
   // Giãn khoảng cách trước–sau giữa các hàng bàn để nhãn tên của hàng phía sau không
   // rơi đúng phía trên đầu học sinh hàng trước (bị che trong góc nhìn phối cảnh).
   const stepZ = 4.4
