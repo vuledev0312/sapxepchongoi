@@ -115,6 +115,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .scene-tip { position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%); background: #ffffffd9; backdrop-filter: blur(6px); border: 1px solid #deddd7; padding: 6px 11px; border-radius: 15px; color: #79817d; font-size: 8px; pointer-events: none; }
 /* Chữ trong khung 3D được phóng to để đọc được cả khi camera lùi xa */
 .name-tag, .teacher-label { background: #fff; border: 1px solid #cfd4d0; box-shadow: 0 3px 10px #0002; border-radius: 5px; padding: 4px 9px; white-space: nowrap; color: #29433c; font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.name-tag__text { display: flex; flex-direction: column; align-items: center; line-height: 1.08; }
+.name-tag__role { color: #8d5546; font-size: 11px; font-style: normal; font-weight: 700; }
 .name-tag.dragging { opacity: 0.5; transform: scale(0.92); }
 /* Nhãn tên chỉ xuất hiện khi học sinh đã đáp xuống ghế, kèm hiệu ứng bung ra cho sinh động */
 .name-tag.pop-in { animation: name-tag-pop .34s cubic-bezier(.2, 1.5, .4, 1) both; }

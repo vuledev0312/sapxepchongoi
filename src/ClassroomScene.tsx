@@ -7,6 +7,10 @@ import type { Group } from 'three'
 import type { Classroom, SeatPosition, Student } from './types'
 import { getDisplayName, getSeats } from './lib'
 
+/** Khoảng cách giữa hai ghế cạnh nhau trong cùng một bàn (đơn vị scene).
+ *  Nới rộng để nhãn tên của hai học sinh cùng bàn tách hẳn sang hai phía,
+ *  không còn tràn chồng lên nhau (theo yêu cầu dịch hai học sinh ra hai bên). */
+const SEAT_SPACING = 2.3
 /** Bán kính (pixel) để coi con trỏ là đang nhắm vào một ghế khi kéo thả từ danh sách học sinh. */
 const SEAT_PICK_RADIUS = 110
 /** Phần thời gian bay phải trôi qua trước khi ghế "nhận" học sinh (đổi màu, hiện nhãn tên). */
@@ -50,7 +54,7 @@ interface ResolvedHop {
 /** Vị trí thực tế của ghế trong không gian (đã tính độ lệch ghế và góc xoay của bàn). */
 function getSeatWorldPosition(seat: SeatPosition, height = 1.5) {
   const offset = seat.seatIndex - (seat.seatCount - 1) / 2
-  const point = new Vector3(offset * 0.95, height, 1)
+  const point = new Vector3(offset * SEAT_SPACING, height, 1)
   point.applyAxisAngle(new Vector3(0, 1, 0), seat.rotation)
   return point.add(new Vector3(seat.x, 0, seat.z))
 }
@@ -179,7 +183,8 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
 }) {
   const isFirst = seat.seatIndex === 0
   const student = students.get(assignments[seat.id])
-  const deskWidth = 1.2 + seat.seatCount * 0.75
+  // Bề rộng mặt bàn nở theo khoảng cách ghế để hai ghế và nhãn tên không đè lên nhau.
+  const deskWidth = 1.2 + seat.seatCount * (SEAT_SPACING + 0.35)
   const offset = seat.seatIndex - (seat.seatCount - 1) / 2
   const legX = deskWidth / 2 - 0.3
   const isDragSource = drag.fromSeatId === seat.id
@@ -201,7 +206,7 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
         </RoundedBox>
         {[-legX, legX].map(x => <mesh key={x} position={[x, .45, 0]} castShadow><boxGeometry args={[.12, .9, .9]} /><meshStandardMaterial color="#72543d" /></mesh>)}
       </>}
-      <group position={[offset * 0.95, .1, 1]}
+      <group position={[offset * SEAT_SPACING, .1, 1]}
         onClick={e => { e.stopPropagation(); if (!drag.fromSeatId) onSeatClick(seat.id) }}
         onPointerDown={e => { if (!student) return; e.stopPropagation(); drag.onGrab(seat.id) }}
         onPointerOver={e => { if (!drag.fromSeatId) return; e.stopPropagation(); drag.onHover(seat.id) }}
@@ -222,7 +227,7 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
           </group>
           <mesh position={[0, 1.04, .08]} castShadow><boxGeometry args={[.52, .1, .18]} /><meshStandardMaterial color={student.gender === 'Nữ' ? '#d66b8b' : student.gender === 'Nam' ? '#4f7894' : '#858c92'} /></mesh>
           {occupied && <Html center position={[0, 2.05, 0]} distanceFactor={10} style={{ pointerEvents: 'none' }}>
-             <div className={`name-tag pop-in ${isDragSource ? 'dragging' : ''}`} title={student.name}>{student.avatar && <img src={student.avatar} alt="" />}{getDisplayName(student.name)}</div>
+             <div className={`name-tag pop-in ${isDragSource ? 'dragging' : ''}`} title={student.role ? `${student.name} · ${student.role}` : student.name}>{student.avatar && <img src={student.avatar} alt="" />}<span className="name-tag__text">{getDisplayName(student.name)}{student.role && <em className="name-tag__role">{student.role}</em>}</span></div>
           </Html>}
           </Hop>
         </FlyIn>}
@@ -234,7 +239,7 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
 /** Vị trí gốc của thân học sinh (điểm đặt ghế) trong không gian, dùng để tính quỹ đạo nhảy. */
 function getSeatAnchor(seat: SeatPosition) {
   const offset = seat.seatIndex - (seat.seatCount - 1) / 2
-  return new Vector3(offset * 0.95, 0.1, 1)
+  return new Vector3(offset * SEAT_SPACING, 0.1, 1)
     .applyAxisAngle(new Vector3(0, 1, 0), seat.rotation)
     .add(new Vector3(seat.x, 0, seat.z))
 }
@@ -291,8 +296,9 @@ function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, handleRef, fligh
   }, [dragFromSeatId])
 
   const maxSeatCount = Math.max(...seats.map(seat => seat.seatCount), 1)
-  const sizeX = Math.max(14, room.columns * (2.2 + maxSeatCount * 0.7) + 6)
-  const sizeZ = Math.max(12, room.rows * 4 + 4)
+  // Hệ số 2.5 khớp với stepX trong getSeats (lib.ts) để nền lớp đủ rộng cho các bàn đã giãn ra.
+  const sizeX = Math.max(14, room.columns * (3.6 + maxSeatCount * 2.5) + 6)
+  const sizeZ = Math.max(12, room.rows * 4.4 + 4)
   const teacherX = (room.teacherDeskSide ?? 'right') === 'right' ? sizeX / 2 - 1.8 : -sizeX / 2 + 1.8
   return <>
     <SeatPicker seats={seats} handleRef={handleRef} />

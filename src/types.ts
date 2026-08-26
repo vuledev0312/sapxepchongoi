@@ -18,6 +18,8 @@ export interface Student {
   weight: number
   performance: number
   priority: boolean
+  /** Chức vụ trong lớp: lớp trưởng, lớp phó, tổ trưởng… In kèm dưới tên khi xuất sơ đồ. */
+  role?: string
   note?: string
   avatar?: string
 }

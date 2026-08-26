@@ -58,7 +58,7 @@ function App() {
   const [mobileNav, setMobileNav] = useState(false)
   const [importText, setImportText] = useState('')
   const [importErrors, setImportErrors] = useState<string[]>([])
-  const [studentDraft, setStudentDraft] = useState<Omit<Student, 'id'>>({ name: '', gender: 'Khác', height: 160, weight: 50, performance: 7, priority: false, avatar: '', note: '' })
+  const [studentDraft, setStudentDraft] = useState<Omit<Student, 'id'>>({ name: '', gender: 'Khác', height: 160, weight: 50, performance: 7, priority: false, role: '', avatar: '', note: '' })
   const [toast, setToast] = useState('')
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
@@ -345,17 +345,17 @@ function App() {
   const addStudent = () => {
     if (!studentDraft.name.trim()) return setToast('Vui lòng nhập họ tên học sinh')
     updateRoom({ students: [...room.students, { ...studentDraft, name: studentDraft.name.trim(), id: uid() }] })
-    setStudentDraft({ name: '', gender: 'Khác', height: 160, weight: 50, performance: 7, priority: false, avatar: '', note: '' })
+    setStudentDraft({ name: '', gender: 'Khác', height: 160, weight: 50, performance: 7, priority: false, role: '', avatar: '', note: '' })
     setShowAddStudent(false); setToast('Đã thêm học sinh')
   }
   const openAddStudent = () => {
     setEditingStudentId(null)
-    setStudentDraft({ name: '', gender: 'Khác', height: 160, weight: 50, performance: 7, priority: false, avatar: '', note: '' })
+    setStudentDraft({ name: '', gender: 'Khác', height: 160, weight: 50, performance: 7, priority: false, role: '', avatar: '', note: '' })
     setShowAddStudent(true)
   }
   const openEditStudent = (student: Student) => {
     setEditingStudentId(student.id)
-    setStudentDraft({ name: student.name, gender: student.gender, height: student.height, weight: student.weight, performance: student.performance, priority: student.priority, avatar: student.avatar ?? '', note: student.note ?? '' })
+    setStudentDraft({ name: student.name, gender: student.gender, height: student.height, weight: student.weight, performance: student.performance, priority: student.priority, role: student.role ?? '', avatar: student.avatar ?? '', note: student.note ?? '' })
     setShowAddStudent(true)
   }
   const saveStudent = () => {
@@ -552,7 +552,7 @@ function App() {
       <button className="primary-button full" onClick={confirmAddRoom}><Plus size={16}/> Tạo lớp học</button>
     </Modal>}
     {showImport && <Modal title="Nhập danh sách học sinh" onClose={() => setShowImport(false)}>
-      <p className="modal-help">Dùng đúng các cột: <strong>Họ tên, Giới tính, Chiều cao, Cân nặng, Điểm, Ưu tiên, Ghi chú, Avatar</strong>. Avatar có thể là URL ảnh; cột ưu tiên nhập “x” hoặc để trống.</p>
+      <p className="modal-help">Dùng đúng các cột: <strong>Họ tên, Giới tính, Chiều cao, Cân nặng, Điểm, Ưu tiên, Chức vụ, Ghi chú, Avatar</strong>. Avatar có thể là URL ảnh; cột ưu tiên nhập “x” hoặc để trống.</p>
       <div className="template-buttons"><button className="file-button" onClick={() => downloadStudentTemplate('csv')}><FileDown size={16}/> Tải CSV mẫu</button><button className="file-button" onClick={() => downloadStudentTemplate('txt')}><FileDown size={16}/> Tải TXT mẫu</button></div>
       <div className="sample-box">
         <div className="sample-box-head"><Wand2 size={15}/><div><strong>Nhập mẫu nhanh</strong><small>Điền sẵn dữ liệu vào ô bên dưới để bạn xem trước và chỉnh sửa.</small></div></div>
@@ -564,14 +564,14 @@ function App() {
           </span>
         </div>
       </div>
-      <textarea rows={8} value={importText} onChange={e => { setImportText(e.target.value); setImportErrors([]) }} placeholder={'Họ tên,Giới tính,Chiều cao,Cân nặng,Điểm,Ưu tiên,Ghi chú,Avatar\nNguyễn Văn An,Nam,165,54,8.2,x,Cần ngồi gần bảng,'}/>
+      <textarea rows={8} value={importText} onChange={e => { setImportText(e.target.value); setImportErrors([]) }} placeholder={'Họ tên,Giới tính,Chiều cao,Cân nặng,Điểm,Ưu tiên,Chức vụ,Ghi chú,Avatar\nNguyễn Văn An,Nam,165,54,8.2,x,Lớp trưởng,Cần ngồi gần bảng,'}/>
       {importErrors.length > 0 && <div className="import-errors"><strong>Vui lòng sửa dữ liệu:</strong>{importErrors.slice(0, 6).map(error => <span key={error}>• {error}</span>)}{importErrors.length > 6 && <span>… và {importErrors.length - 6} lỗi khác</span>}</div>}
       <div className="modal-actions"><label className="file-button"><FileUp size={16}/> Chọn CSV / TXT<input hidden type="file" accept=".csv,.txt,text/csv,text/plain" onChange={e => onCsv(e.target.files?.[0])}/></label><button className="primary-button" onClick={importList}>Kiểm tra và thêm</button></div>
     </Modal>}
     {showAddStudent && <Modal title={editingStudentId ? 'Chỉnh sửa học sinh' : 'Thêm học sinh'} onClose={() => { setShowAddStudent(false); setEditingStudentId(null) }}>
       <div className="student-form">
         <div className="avatar-picker"><StudentAvatar student={{ ...studentDraft, id: 'preview', name: studentDraft.name || '?' } as Student}/><div><label className="file-button"><ImagePlus size={16}/> Chọn ảnh<input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={e => onAvatar(e.target.files?.[0])}/></label><small>PNG, JPG hoặc WebP, tối đa 1,5 MB</small></div></div>
-        <div className="form-grid"><label>Họ và tên *<input autoFocus value={studentDraft.name} onChange={e => setStudentDraft({ ...studentDraft, name: e.target.value })}/></label><label>Giới tính<select value={studentDraft.gender} onChange={e => setStudentDraft({ ...studentDraft, gender: e.target.value as Student['gender'] })}><option>Nam</option><option>Nữ</option><option>Khác</option></select></label><label>Chiều cao (cm)<input type="number" min="80" max="250" value={studentDraft.height} onChange={e => setStudentDraft({ ...studentDraft, height: Number(e.target.value) })}/></label><label>Cân nặng (kg)<input type="number" min="15" max="250" value={studentDraft.weight} onChange={e => setStudentDraft({ ...studentDraft, weight: Number(e.target.value) })}/></label><label>Điểm / học lực<input type="number" min="0" max="10" step="0.1" value={studentDraft.performance} onChange={e => setStudentDraft({ ...studentDraft, performance: Number(e.target.value) })}/></label><label>URL avatar (tùy chọn)<input value={studentDraft.avatar} onChange={e => setStudentDraft({ ...studentDraft, avatar: e.target.value })} placeholder="https://..."/></label></div>
+        <div className="form-grid"><label>Họ và tên *<input autoFocus value={studentDraft.name} onChange={e => setStudentDraft({ ...studentDraft, name: e.target.value })}/></label><label>Chức vụ (tùy chọn)<input value={studentDraft.role ?? ''} onChange={e => setStudentDraft({ ...studentDraft, role: e.target.value })} placeholder="Lớp trưởng, lớp phó, tổ trưởng…"/></label><label>Giới tính<select value={studentDraft.gender} onChange={e => setStudentDraft({ ...studentDraft, gender: e.target.value as Student['gender'] })}><option>Nam</option><option>Nữ</option><option>Khác</option></select></label><label>Chiều cao (cm)<input type="number" min="80" max="250" value={studentDraft.height} onChange={e => setStudentDraft({ ...studentDraft, height: Number(e.target.value) })}/></label><label>Cân nặng (kg)<input type="number" min="15" max="250" value={studentDraft.weight} onChange={e => setStudentDraft({ ...studentDraft, weight: Number(e.target.value) })}/></label><label>Điểm / học lực<input type="number" min="0" max="10" step="0.1" value={studentDraft.performance} onChange={e => setStudentDraft({ ...studentDraft, performance: Number(e.target.value) })}/></label><label>URL avatar (tùy chọn)<input value={studentDraft.avatar} onChange={e => setStudentDraft({ ...studentDraft, avatar: e.target.value })} placeholder="https://..."/></label></div>
         <label className="wide-label">Ghi chú<textarea rows={3} value={studentDraft.note} onChange={e => setStudentDraft({ ...studentDraft, note: e.target.value })}/></label><label className="check-label"><input type="checkbox" checked={studentDraft.priority} onChange={e => setStudentDraft({ ...studentDraft, priority: e.target.checked })}/> Ưu tiên xếp gần bảng</label>
       </div><button className="primary-button full" onClick={saveStudent}>{editingStudentId ? 'Lưu thay đổi' : 'Thêm học sinh'}</button>
     </Modal>}
@@ -637,7 +637,7 @@ function StudentsPage({ room, query, setQuery, onAdd, onEdit, onDelete, onImport
   const assignedIds = new Set(Object.values(room.assignments))
   const seatByStudent = new Map(Object.entries(room.assignments).map(([seatId, studentId]) => [studentId, seatId]))
   const students = room.students.filter(student => {
-    const matchesText = `${student.name} ${student.note ?? ''}`.toLowerCase().includes(query.toLowerCase())
+    const matchesText = `${student.name} ${student.role ?? ''} ${student.note ?? ''}`.toLowerCase().includes(query.toLowerCase())
     return matchesText && (status === 'all' || (status === 'assigned' ? assignedIds.has(student.id) : !assignedIds.has(student.id)))
   }).sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'vi') : sort === 'height' ? a.height - b.height : b.performance - a.performance)
   const average = room.students.length ? room.students.reduce((sum, student) => sum + student.performance, 0) / room.students.length : 0
@@ -650,7 +650,7 @@ function StudentsPage({ room, query, setQuery, onAdd, onEdit, onDelete, onImport
       <div className="table-tools"><div className="search table-search"><Search size={17}/><input aria-label="Tìm trong danh sách" placeholder="Tìm theo tên hoặc ghi chú..." value={query} onChange={e => setQuery(e.target.value)}/></div><div className="filter-tabs"><button className={status === 'all' ? 'active' : ''} onClick={() => setStatus('all')}>Tất cả</button><button className={status === 'assigned' ? 'active' : ''} onClick={() => setStatus('assigned')}>Đã xếp</button><button className={status === 'waiting' ? 'active' : ''} onClick={() => setStatus('waiting')}>Chưa xếp</button></div><select aria-label="Sắp xếp học sinh" value={sort} onChange={e => setSort(e.target.value as typeof sort)}><option value="name">Tên A–Z</option><option value="performance">Điểm cao trước</option><option value="height">Chiều cao tăng dần</option></select></div>
       <div className="table-scroll"><table><thead><tr><th>Học sinh</th><th>Giới tính</th><th>Thể chất</th><th>Học lực</th><th>Ghi chú</th><th>Chỗ ngồi</th><th aria-label="Thao tác"/></tr></thead><tbody>{students.map(student => {
         const seatId = seatByStudent.get(student.id); const [deskIndex, seatIndex] = seatId?.split('-').map(Number) ?? []
-        return <tr key={student.id}><td><div className="student-cell"><StudentAvatar student={student}/><span><strong>{student.name}</strong><small>{student.priority ? '★ Ưu tiên gần bảng' : 'Hồ sơ tiêu chuẩn'}</small></span></div></td><td>{student.gender}</td><td><strong>{student.height} cm</strong><small>{student.weight} kg</small></td><td><span className={`score-badge ${student.performance >= 8 ? 'high' : student.performance < 6.5 ? 'low' : ''}`}>{student.performance.toFixed(1)}</span></td><td><span className="note-cell">{student.note || '—'}</span></td><td>{seatId ? <button className="seat-status assigned" onClick={onGoToSeats}>Bàn {deskIndex + 1} · Ghế {seatIndex + 1}</button> : <button className="seat-status" onClick={onGoToSeats}>Chưa xếp</button>}</td><td><div className="row-actions"><button title="Sửa" onClick={() => onEdit(student)}><Pencil size={15}/></button><button className="danger" title="Xóa" onClick={() => onDelete(student.id)}><Trash2 size={15}/></button></div></td></tr>
+        return <tr key={student.id}><td><div className="student-cell"><StudentAvatar student={student}/><span><strong>{student.name}</strong><small>{student.role ? student.role : student.priority ? '★ Ưu tiên gần bảng' : 'Hồ sơ tiêu chuẩn'}</small></span></div></td><td>{student.gender}</td><td><strong>{student.height} cm</strong><small>{student.weight} kg</small></td><td><span className={`score-badge ${student.performance >= 8 ? 'high' : student.performance < 6.5 ? 'low' : ''}`}>{student.performance.toFixed(1)}</span></td><td><span className="note-cell">{student.note || '—'}</span></td><td>{seatId ? <button className="seat-status assigned" onClick={onGoToSeats}>Bàn {deskIndex + 1} · Ghế {seatIndex + 1}</button> : <button className="seat-status" onClick={onGoToSeats}>Chưa xếp</button>}</td><td><div className="row-actions"><button title="Sửa" onClick={() => onEdit(student)}><Pencil size={15}/></button><button className="danger" title="Xóa" onClick={() => onDelete(student.id)}><Trash2 size={15}/></button></div></td></tr>
       })}</tbody></table>{!students.length && <div className="empty-table"><UserRound/><strong>Không có học sinh phù hợp</strong><p>Thử thay đổi từ khóa hoặc bộ lọc hiện tại.</p></div>}</div>
     </div>
   </section>

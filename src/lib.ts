@@ -151,13 +151,20 @@ export function getDeskSeatCount(room: Classroom, deskIndex: number) {
 export function getSeats(room: Classroom): SeatPosition[] {
   const seats: SeatPosition[] = []
   const maxSeatCount = Math.max(...Array.from({ length: room.rows * room.columns }, (_, desk) => getDeskSeatCount(room, desk)), 1)
-  const stepX = 2.2 + maxSeatCount * 0.7
+  // Nới rộng khoảng cách giữa các bàn để nhãn tên (name-tag) của bàn cạnh nhau
+  // không tràn ngang chồng lên nhau. Hệ số theo số ghế/bàn để bàn càng nhiều ghế càng giãn rộng.
+  // Lưu ý: hệ số 2.5 phải khớp với SEAT_SPACING (2.3) trong ClassroomScene.tsx — khi hai học sinh
+  // cùng bàn được tách rộng ra hai phía thì khoảng cách giữa các bàn cũng phải giãn theo để không đè.
+  const stepX = 3.6 + maxSeatCount * 2.5
+  // Giãn khoảng cách trước–sau giữa các hàng bàn để nhãn tên của hàng phía sau không
+  // rơi đúng phía trên đầu học sinh hàng trước (bị che trong góc nhìn phối cảnh).
+  const stepZ = 4.4
   const width = Math.max(1, room.columns - 1) * stepX
-  const depth = Math.max(1, room.rows - 1) * 3.2
+  const depth = Math.max(1, room.rows - 1) * stepZ
   for (let row = 0; row < room.rows; row++) {
     for (let col = 0; col < room.columns; col++) {
       let x = col * stepX - width / 2
-      let z = row * 3.2 - depth / 2 + 0.6
+      let z = row * stepZ - depth / 2 + 0.6
       let rotation = 0
       if (room.layout === 'u-shape') {
         const count = room.rows * room.columns
@@ -426,11 +433,12 @@ export function parseStudents(text: string): StudentImportResult {
     hoten: 'name', ten: 'name', name: 'name', gioitinh: 'gender', gender: 'gender',
     chieucao: 'height', height: 'height', cannang: 'weight', weight: 'weight',
     diem: 'performance', hocluc: 'performance', performance: 'performance', uutien: 'priority', priority: 'priority',
+    chucvu: 'role', chucdanh: 'role', role: 'role',
     ghichu: 'note', note: 'note', avatar: 'avatar', anhdaidien: 'avatar',
   }
   const normalized = firstCells.map(normalizeHeader)
   const hasHeader = normalized.some(cell => Boolean(aliases[cell]))
-  const defaultFields = ['name', 'gender', 'height', 'weight', 'performance', 'priority', 'note', 'avatar']
+  const defaultFields = ['name', 'gender', 'height', 'weight', 'performance', 'priority', 'role', 'note', 'avatar']
   const fields = hasHeader ? normalized.map(cell => aliases[cell] ?? '') : defaultFields
   const dataLines = hasHeader ? lines.slice(1) : lines
   const students: Student[] = []
@@ -453,7 +461,7 @@ export function parseStudents(text: string): StudentImportResult {
       gender: /^(nữ|nu|f)$/i.test(genderText) ? 'Nữ' : /^(nam|m)$/i.test(genderText) ? 'Nam' : 'Khác',
       height, weight, performance,
       priority: /^(1|x|true|có|co|yes)$/i.test(data.priority || ''),
-      note: data.note || undefined, avatar: data.avatar || undefined,
+      role: data.role || undefined, note: data.note || undefined, avatar: data.avatar || undefined,
     })
   })
   return { students, errors }
@@ -509,6 +517,20 @@ export function exportPdf(room: Classroom, options: PdfExportOptions = {}) {
   const deskLeftOf = (column: number) => gridLeft + column * (deskWidth + aisleGap)
   const deskTopOf = (row: number) => gridTop + laneLabelHeight + row * (rowHeight + rowGap)
 
+  const seatGap = 8
+  const seatHeight = rowHeight - 16
+  // Cỡ chữ dùng chung cho mọi tên: tính một lần theo ô ghế và tên dài nhất, để tất cả
+  // các tên hiển thị cùng một kích thước (không còn chỗ chữ to chỗ chữ nhỏ).
+  const uniformNameFontSize = computeUniformNameFontSize(
+    ctx,
+    room.students.map(student => student.name),
+    room.students.map(student => student.role ?? ''),
+    deskWidth,
+    seatGap,
+    seats,
+    seatHeight,
+  )
+
   for (let visualRow = 0; visualRow < rowCount; visualRow++) {
     const row = rowCount - 1 - visualRow
     const top = deskTopOf(visualRow)
@@ -519,11 +541,10 @@ export function exportPdf(room: Classroom, options: PdfExportOptions = {}) {
       ctx.fillStyle = '#f7f7f4'; roundedRect(ctx, left, top, deskWidth, rowHeight, 12); ctx.fill()
       ctx.strokeStyle = '#c4ccc8'; ctx.lineWidth = 2; ctx.stroke()
       if (!deskSeats.length) continue
-      const seatGap = 8
       const seatWidth = (deskWidth - 16 - (deskSeats.length - 1) * seatGap) / deskSeats.length
       deskSeats.forEach(seat => {
         const seatX = left + 8 + seat.seatIndex * (seatWidth + seatGap)
-        drawPdfSeat(ctx, seatX, top + 8, seatWidth, rowHeight - 16, students.get(room.assignments[seat.id]))
+        drawPdfSeat(ctx, seatX, top + 8, seatWidth, seatHeight, students.get(room.assignments[seat.id]), uniformNameFontSize)
       })
     }
   }
@@ -534,16 +555,99 @@ export function exportPdf(room: Classroom, options: PdfExportOptions = {}) {
   pdf.save(`so-do-${slugify(room.name)}.pdf`)
 }
 
-/** Vẽ một ghế trong bản PDF: chỉ hiển thị tên học sinh. */
-function drawPdfSeat(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, student: Student | undefined) {
+/**
+ * Cỡ chữ tên nhỏ nhất/lớn nhất cho phép trong bản PDF. Cỡ chung sẽ nằm trong khoảng này
+ * để tên không quá nhỏ khó đọc, cũng không quá to tràn ô.
+ */
+const PDF_NAME_MIN_FONT = 13
+const PDF_NAME_MAX_FONT = 30
+
+/**
+ * Tính một cỡ chữ dùng chung cho MỌI tên học sinh trong bản PDF.
+ * Cỡ chữ được chọn là cỡ lớn nhất mà tên dài nhất vẫn vừa trong ô ghế hẹp nhất
+ * (khi bọc tối đa 2 dòng), nhờ vậy tất cả tên hiển thị cùng một kích thước.
+ */
+function computeUniformNameFontSize(
+  ctx: CanvasRenderingContext2D,
+  names: string[],
+  roles: string[],
+  deskWidth: number,
+  seatGap: number,
+  seats: SeatPosition[],
+  seatHeight: number,
+): number {
+  const validNames = names.filter(Boolean)
+  if (!validNames.length) return PDF_NAME_MAX_FONT
+  // Số ghế nhiều nhất trên một bàn -> ô ghế hẹp nhất -> ràng buộc cỡ chữ chặt nhất.
+  const maxSeatsOnDesk = Math.max(1, ...seats.map(seat => seat.seatCount))
+  const seatWidth = (deskWidth - 16 - (maxSeatsOnDesk - 1) * seatGap) / maxSeatsOnDesk
+  const maxTextWidth = seatWidth - 20
+  // Nếu có học sinh mang chức vụ thì phải chừa thêm một dòng nhỏ bên dưới -> giảm chiều cao
+  // dành cho tên (coi như tên chỉ dùng ~72% chiều cao ô, phần còn lại cho dòng chức vụ).
+  const hasRole = roles.some(Boolean)
+  const usableHeight = hasRole ? (seatHeight - 8) * 0.72 : seatHeight - 8
+  const maxLineHeight = usableHeight / 2 // giữ chỗ cho tối đa 2 dòng
+
+  const upper = Math.min(PDF_NAME_MAX_FONT, Math.floor(maxLineHeight))
+  for (let size = upper; size >= PDF_NAME_MIN_FONT; size--) {
+    ctx.font = `700 ${size}px Arial, sans-serif`
+    // Tất cả tên phải vừa trong tối đa 2 dòng ở cỡ chữ này.
+    const fits = validNames.every(name => textFitsInTwoLines(ctx, name, maxTextWidth))
+    if (fits) return size
+  }
+  return PDF_NAME_MIN_FONT
+}
+
+/** Kiểm tra chuỗi có bọc vừa trong tối đa 2 dòng với chiều rộng cho trước không. */
+function textFitsInTwoLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): boolean {
+  const words = text.split(/\s+/).filter(Boolean)
+  let line = ''
+  let lineCount = 0
+  for (const word of words) {
+    // Một từ đơn dài hơn cả dòng thì không thể vừa -> cỡ chữ này quá lớn.
+    if (ctx.measureText(word).width > maxWidth) return false
+    const test = line ? `${line} ${word}` : word
+    if (ctx.measureText(test).width > maxWidth && line) {
+      lineCount++
+      line = word
+      if (lineCount >= 2) return false
+    } else {
+      line = test
+    }
+  }
+  return true
+}
+
+/** Vẽ một ghế trong bản PDF: chỉ hiển thị tên học sinh với cỡ chữ đồng nhất truyền vào. */
+function drawPdfSeat(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, student: Student | undefined, fontSize: number) {
   ctx.fillStyle = student ? '#e4f0e8' : '#fbfbf9'; roundedRect(ctx, x, y, width, height, 10); ctx.fill()
   ctx.strokeStyle = '#b3bdb8'; ctx.lineWidth = 2.5; ctx.stroke()
   const label = student?.name ?? ''
-  const fontSize = getFittingFontSize(ctx, label, width - 24, Math.min(32, Math.max(17, Math.floor(height * .32))), 13)
+  const role = student?.role?.trim()
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  // Có chức vụ thì đẩy khối tên lên trên một chút để chừa chỗ in dòng chức vụ bên dưới.
+  const roleFontSize = Math.max(9, Math.round(fontSize * 0.62))
+  const centerY = role ? y + height / 2 - (roleFontSize + 2) / 2 : y + height / 2
   ctx.fillStyle = '#1f4a41'
   ctx.font = `700 ${fontSize}px Arial, sans-serif`
-  wrapText(ctx, label, x + width / 2, y + height / 2, width - 20, fontSize + 5)
+  const nameLines = wrapText(ctx, label, x + width / 2, centerY, width - 20, fontSize + 5)
+  if (role) {
+    ctx.fillStyle = '#8d5546'
+    ctx.font = `700 ${roleFontSize}px Arial, sans-serif`
+    // Dòng chức vụ nằm ngay dưới dòng tên cuối cùng.
+    const roleY = centerY + Math.max(1, nameLines) * (fontSize + 5) / 2 + (roleFontSize + 2) / 2
+    ctx.fillText(fitSingleLine(ctx, role, width - 16), x + width / 2, Math.min(roleY, y + height - roleFontSize / 2 - 3))
+  }
+}
+
+/** Rút gọn chuỗi (thêm dấu …) cho vừa một dòng với chiều rộng cho trước. */
+function fitSingleLine(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+  if (ctx.measureText(text).width <= maxWidth) return text
+  let trimmed = text
+  while (trimmed.length > 1 && ctx.measureText(`${trimmed}…`).width > maxWidth) {
+    trimmed = trimmed.slice(0, -1)
+  }
+  return `${trimmed}…`
 }
 
 /** Vẽ bàn giáo viên cho bản PDF. */
@@ -622,7 +726,7 @@ export function exportWord(room: Classroom) {
   const seatCell = (seatId: string, span: number) => {
     const student = students.get(room.assignments[seatId])
     const span2 = span > 1 ? ` colspan="${span}"` : ''
-    return `<td class="${student ? 'seat' : 'seat-blank'}"${span2}><p class="seat-name">${student ? escapeHtml(student.name) : ''}</p></td>`
+    return `<td class="${student ? 'seat' : 'seat-blank'}"${span2}><p class="seat-name">${student ? escapeHtml(student.name) : ''}</p>${student?.role ? `<p class="seat-note">${escapeHtml(student.role)}</p>` : ''}</td>`
   }
 
   const deskRows = Array.from({ length: room.rows }, (_, visualRow) => {
@@ -787,11 +891,15 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width:
   ctx.beginPath(); ctx.roundRect(x, y, width, height, radius)
 }
 
-function wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) {
+function wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number): number {
   const words = text.split(/\s+/); const lines: string[] = []; let line = ''
   words.forEach(word => { const test = line ? `${line} ${word}` : word; if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = word } else line = test })
   if (line) lines.push(line)
-  lines.slice(0, 2).forEach((item, index) => ctx.fillText(item, x, y + index * lineHeight))
+  const visible = lines.slice(0, 2)
+  // Căn khối văn bản quanh y: dòng đầu dịch lên nửa tổng chiều cao để tâm khối trùng y.
+  const startY = y - (visible.length - 1) * lineHeight / 2
+  visible.forEach((item, index) => ctx.fillText(item, x, startY + index * lineHeight))
+  return visible.length
 }
 
 /** Tải một tệp văn bản (kèm BOM để Excel đọc đúng tiếng Việt). */
@@ -812,9 +920,9 @@ function slugify(value: string) {
 export function downloadStudentTemplate(format: 'csv' | 'txt' = 'csv') {
   const delimiter = format === 'csv' ? ',' : '\t'
   const rows = [
-    ['Họ tên', 'Giới tính', 'Chiều cao', 'Cân nặng', 'Điểm', 'Ưu tiên', 'Ghi chú', 'Avatar'],
-    ['Nguyễn Văn An', 'Nam', '165', '54', '8.2', 'x', 'Cần ngồi gần bảng', 'https://example.com/avatar.jpg'],
-    ['Trần Mai Anh', 'Nữ', '158', '47', '9.0', '', '', ''],
+    ['Họ tên', 'Giới tính', 'Chiều cao', 'Cân nặng', 'Điểm', 'Ưu tiên', 'Chức vụ', 'Ghi chú', 'Avatar'],
+    ['Nguyễn Văn An', 'Nam', '165', '54', '8.2', 'x', 'Lớp trưởng', 'Cần ngồi gần bảng', 'https://example.com/avatar.jpg'],
+    ['Trần Mai Anh', 'Nữ', '158', '47', '9.0', '', 'Tổ trưởng tổ 1', '', ''],
   ]
   const content = rows.map(row => format === 'csv' ? toCsvRow(row) : row.join(delimiter)).join('\r\n')
   downloadTextFile(content, `mau-danh-sach-hoc-sinh.${format}`, format === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8')
@@ -823,13 +931,13 @@ export function downloadStudentTemplate(format: 'csv' | 'txt' = 'csv') {
 /** Nội dung CSV của danh sách học sinh (cùng định dạng cột với chức năng nhập danh sách). */
 export function studentsToCsv(room: Classroom) {
   const seatByStudent = new Map(Object.entries(room.assignments).map(([seatId, studentId]) => [studentId, seatId]))
-  const rows: string[][] = [['Họ tên', 'Giới tính', 'Chiều cao', 'Cân nặng', 'Điểm', 'Ưu tiên', 'Ghi chú', 'Avatar', 'Bàn', 'Ghế']]
+  const rows: string[][] = [['Họ tên', 'Giới tính', 'Chiều cao', 'Cân nặng', 'Điểm', 'Ưu tiên', 'Chức vụ', 'Ghi chú', 'Avatar', 'Bàn', 'Ghế']]
   room.students.forEach(student => {
     const seatId = seatByStudent.get(student.id)
     const [deskIndex, seatIndex] = seatId ? seatId.split('-').map(Number) : []
     rows.push([
       student.name, student.gender, String(student.height), String(student.weight), student.performance.toFixed(1),
-      student.priority ? 'x' : '', student.note ?? '', student.avatar ?? '',
+      student.priority ? 'x' : '', student.role ?? '', student.note ?? '', student.avatar ?? '',
       seatId ? String(deskIndex + 1) : '', seatId ? String(seatIndex + 1) : '',
     ])
   })
