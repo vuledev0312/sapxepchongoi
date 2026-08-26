@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
@@ -27,5 +27,10 @@ export default defineConfig({
       // Không theo dõi cache/output để giảm khóa file trên Windows.
       ignored: ['**/node_modules/.vite/**', '**/dist/**'],
     },
+  },
+  test: {
+    // jsdom cung cấp crypto.randomUUID và document cho các hàm trong lib.ts.
+    environment: 'jsdom',
+    include: ['src/**/*.test.ts'],
   },
 })
