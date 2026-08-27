@@ -48,6 +48,9 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed.' })
   } catch (error) {
     console.error('Workspace API error:', error)
-    return res.status(503).json({ error: 'Không thể kết nối cơ sở dữ liệu.' })
+    const debug = process.env.DEBUG_DB === '1'
+      ? { detail: error?.message, name: error?.name, hasUri: Boolean(process.env.MONGODB_URI) }
+      : {}
+    return res.status(503).json({ error: 'Không thể kết nối cơ sở dữ liệu.', ...debug })
   }
 }
