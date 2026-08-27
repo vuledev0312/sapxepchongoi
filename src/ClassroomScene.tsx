@@ -19,6 +19,7 @@ const LANDING_POINT = 0.55
 /** API cho phép giao diện ngoài canvas hỏi “ghế nào đang nằm dưới con trỏ”. */
 export interface SceneHandle {
   seatAt: (x: number, y: number) => string | null
+  seatsInRect: (startX: number, startY: number, endX: number, endY: number) => string[]
 }
 
 interface SceneProps {
@@ -28,6 +29,8 @@ interface SceneProps {
   onSeatSwap?: (fromSeatId: string, toSeatId: string) => void
   /** Ghế đang được nhắm tới khi kéo thẻ học sinh từ danh sách thả vào khung 3D. */
   highlightSeatId?: string | null
+  /** Các ghế được chọn bằng thao tác quét vùng. */
+  selectedSeatIds?: string[]
   /** Nhận API tìm ghế theo tọa độ con trỏ (dùng cho kéo thả từ ngoài canvas). */
   handleRef?: MutableRefObject<SceneHandle | null>
   /** seatId → thời điểm bắt đầu bay (ms). Học sinh sẽ bay vào chỗ theo kiểu anime. */
@@ -81,6 +84,17 @@ function SeatPicker({ seats, handleRef }: { seats: SeatPosition[]; handleRef?: M
         })
         return nearest
       },
+      seatsInRect: (startX, startY, endX, endY) => {
+        const left = Math.min(startX, endX); const right = Math.max(startX, endX)
+        const top = Math.min(startY, endY); const bottom = Math.max(startY, endY)
+        return seats.filter(seat => {
+          const point = getSeatWorldPosition(seat, 1).project(camera)
+          const x = (point.x * .5 + .5) * size.width
+          const y = (-point.y * .5 + .5) * size.height
+          return x >= left && x <= right && y >= top && y <= bottom
+        }).map(seat => seat.id)
+      },
+
     }
     return () => { handleRef.current = null }
   }, [seats, camera, size, handleRef])
@@ -164,11 +178,12 @@ function Hop({ hop, duration, children }: { hop?: ResolvedHop; duration: number;
   return <group ref={ref}>{children}</group>
 }
 
-function Desk({ seat, students, assignments, onSeatClick, flights, flightDuration, hop, hopDuration, drag }: {
+function Desk({ seat, students, assignments, onSeatClick, selected, flights, flightDuration, hop, hopDuration, drag }: {
   seat: SeatPosition
   students: Map<string, Student>
   assignments: Record<string, string>
   onSeatClick: (id: string) => void
+  selected: boolean
   flights?: Record<string, number>
   flightDuration: number
   hop?: ResolvedHop
@@ -197,8 +212,9 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
   const hopLanded = useLanded(hop?.startAt, hopDuration)
   const seated = Boolean(student) && landed
   const occupied = seated && hopLanded
-  const seatColor = isDropTarget ? '#d47758' : isDragSource ? '#7fae9f' : occupied ? '#295e52' : '#c9cec8'
-  const backColor = isDropTarget ? '#e29377' : isDragSource ? '#9cc4b6' : occupied ? '#377769' : '#dde0dc'
+  const selectionColor = selected ? '#f0ad4e' : undefined
+  const seatColor = isDropTarget ? '#d47758' : isDragSource ? '#7fae9f' : selectionColor ?? (occupied ? '#295e52' : '#c9cec8')
+  const backColor = isDropTarget ? '#e29377' : isDragSource ? '#9cc4b6' : selectionColor ? '#ffd27b' : (occupied ? '#377769' : '#dde0dc')
   return (
     <group position={[seat.x, 0, seat.z]} rotation={[0, seat.rotation, 0]}>
       {isFirst && <>
@@ -215,6 +231,7 @@ function Desk({ seat, students, assignments, onSeatClick, flights, flightDuratio
         onPointerUp={e => { if (!drag.fromSeatId) return; e.stopPropagation(); drag.onDropAt(seat.id) }}>
         <mesh position={[0, .45, 0]} castShadow><boxGeometry args={[.85, .1, .75]} /><meshStandardMaterial color={seatColor} /></mesh>
         <mesh position={[0, .8, .34]} rotation={[-.15, 0, 0]} castShadow><boxGeometry args={[.85, .8, .1]} /><meshStandardMaterial color={backColor} /></mesh>
+        {selected && <mesh position={[0, .06, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[.5, .68, 28]} /><meshBasicMaterial color="#e99b2e" transparent opacity={.95} /></mesh>}
         {isDropTarget && <mesh position={[0, .06, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[.5, .68, 28]} /><meshBasicMaterial color="#d47758" transparent opacity={.85} /></mesh>}
         {student && <FlyIn startAt={flights?.[seat.id]} duration={flightDuration}>
           <Hop hop={hop} duration={hopDuration}>
@@ -245,7 +262,7 @@ function getSeatAnchor(seat: SeatPosition) {
     .add(new Vector3(seat.x, 0, seat.z))
 }
 
-function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, handleRef, flights, flightDuration = 1400, hops, hopDuration = 850 }: SceneProps) {
+function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, selectedSeatIds = [], handleRef, flights, flightDuration = 1400, hops, hopDuration = 850 }: SceneProps) {
   const seats = useMemo(() => getSeats(room), [room])
   const students = useMemo(() => new Map(room.students.map(s => [s.id, s])), [room.students])
   /** Đổi seatId nguồn thành độ lệch cục bộ để component Hop chỉ cần nội suy. */
@@ -264,6 +281,7 @@ function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, handleRef, fligh
     })
     return result
   }, [hops, seats])
+  const selectedSeats = useMemo(() => new Set(selectedSeatIds), [selectedSeatIds])
   const [dragFromSeatId, setDragFromSeatId] = useState<string | null>(null)
   const [dragTargetSeatId, setDragTargetSeatId] = useState<string | null>(null)
   const controlsRef = useRef<any>(null)
@@ -332,7 +350,7 @@ function Room({ room, onSeatClick, onSeatSwap, highlightSeatId, handleRef, fligh
       <mesh position={[0, .8, 0]}><sphereGeometry args={[.7, 12, 12]} /><meshStandardMaterial color="#678b54" /></mesh>
       <mesh><cylinderGeometry args={[.38, .48, .8, 12]} /><meshStandardMaterial color="#a86f4b" /></mesh>
     </group>
-    {seats.map(seat => <Desk key={seat.id} seat={seat} students={students} assignments={room.assignments} onSeatClick={onSeatClick} flights={flights} flightDuration={flightDuration} hop={resolvedHops[seat.id]} hopDuration={hopDuration} drag={drag} />)}
+    {seats.map(seat => <Desk key={seat.id} seat={seat} students={students} assignments={room.assignments} onSeatClick={onSeatClick} selected={selectedSeats.has(seat.id)} flights={flights} flightDuration={flightDuration} hop={resolvedHops[seat.id]} hopDuration={hopDuration} drag={drag} />)}
     <OrbitControls ref={controlsRef} makeDefault minDistance={8} maxDistance={35} maxPolarAngle={Math.PI / 2.08} target={[0, 0, 1]} />
     <Environment preset="city" />
   </>

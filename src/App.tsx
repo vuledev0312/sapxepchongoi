@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Armchair, BarChart3, BookOpen, Box, CheckCircle2, ChevronDown, CircleHelp, Copy, Dices, Download, Eraser, FileDown, FileSpreadsheet, FileText, FileUp, Grid2X2, ImagePlus, LayoutDashboard, Lock, LockOpen, Maximize2, Menu, Minimize2, Pencil, Plane, Plus, Rabbit, RotateCcw, Search, Settings2, Shuffle, Sparkles, Trash2, UserRound, Users, Wand2, X } from 'lucide-react'
+import SelectionOverlay from './SelectionOverlay'
+import { ACTIVE_USERNAME_KEY, createDefaultProfile, loadCloudWorkspace, loadWorkspace, normalizeUsername, saveCloudWorkspace, saveWorkspace, type TeacherProfile } from './storage'
+
 import ClassroomScene, { type HopRequest, type SceneHandle } from './ClassroomScene'
-import { DEFAULT_COLUMN_GENDER_RATIO, LAST_ROW_RULE_LABELS, LAST_ROW_RULE_OPTIONS, MAX_SEATS_PER_DESK, RANDOM_STUDENT_COUNT_OPTIONS, applyLastRowRule, arrange, createClassroom, createSampleStudents, demoStudents, downloadStudentTemplate, exportPdf, exportStudentsCsv, exportWord, generateRandomStudents, getDefaultSchoolYear, getDeskSeatCount, getDisplayName, getSeats, legacyDemoStudentNames, normalizeGenderRatio, normalizeLastRowRule, parseStudents, studentsToCsv, uid } from './lib'
+import { DEFAULT_COLUMN_GENDER_RATIO, LAST_ROW_RULE_LABELS, LAST_ROW_RULE_OPTIONS, MAX_SEATS_PER_DESK, RANDOM_STUDENT_COUNT_OPTIONS, applyLastRowRule, arrange, createClassroom, createSampleStudents, demoStudents, downloadStudentTemplate, exportPdf, exportStudentsCsv, exportWord, generateRandomStudents, getDefaultSchoolYear, getDeskSeatCount, getDisplayName, getSeats, legacyDemoStudentNames, normalizeGenderRatio, normalizeLastRowRule, parseStudents, shuffleSelectedAssignments, studentsToCsv, uid } from './lib'
 import type { ArrangeMode, ArrangeScope, Classroom, LastRowRule, LayoutStyle, Student, ViewMode } from './types'
 
-const STORAGE_KEY = 'classroom-3d-data-v1'
-const PROFILE_KEY = 'classroom-3d-profile-v1'
 const FLIGHT_DURATION = 1400
 /** Thời gian một cú nhảy đổi chỗ (ms). */
 const HOP_DURATION = 850
@@ -15,35 +16,24 @@ const FLIGHT_BATCH_OPTIONS = [0, 1, 2, 4] as const
 /** Cách tạo danh sách khi mở lớp mới. */
 type NewRoomSource = 'empty' | 'sample' | 'random'
 type WorkspacePage = 'overview' | 'seating' | 'students'
-interface TeacherProfile { name: string; role: string; email: string; school: string }
+
+function normalizeRooms(storedRooms: Classroom[]) {
+  return storedRooms.map(storedRoom => ({
+    ...storedRoom,
+    deskSeats: storedRoom.deskSeats ?? {},
+    teacherDeskSide: storedRoom.teacherDeskSide ?? 'right',
+    columnGenderRatio: normalizeGenderRatio(storedRoom.columnGenderRatio),
+    lastRowRule: normalizeLastRowRule(storedRoom.lastRowRule),
+    schoolYear: storedRoom.schoolYear ?? getDefaultSchoolYear(),
+  }))
+}
 
 function App() {
-  const [rooms, setRooms] = useState<Classroom[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) {
-        const storedRooms = JSON.parse(saved) as Classroom[]
-        return storedRooms.map(storedRoom => {
-          // Bổ sung các thiết lập mới cho dữ liệu lưu từ phiên bản trước
-          const room: Classroom = {
-            ...storedRoom,
-            deskSeats: storedRoom.deskSeats ?? {},
-            teacherDeskSide: storedRoom.teacherDeskSide ?? 'right',
-            columnGenderRatio: normalizeGenderRatio(storedRoom.columnGenderRatio),
-            lastRowRule: normalizeLastRowRule(storedRoom.lastRowRule),
-            schoolYear: storedRoom.schoolYear ?? getDefaultSchoolYear(),
-          }
-          const isLegacyDemo = room.students.length === legacyDemoStudentNames.length
-            && legacyDemoStudentNames.every(name => room.students.some(student => student.name === name))
-          if (!isLegacyDemo) return room
-          const additionalStudents = demoStudents.slice(legacyDemoStudentNames.length).map(student => ({ ...student, id: uid() }))
-          return { ...room, students: [...room.students, ...additionalStudents] }
-        })
-      }
-    } catch { /* use demo */ }
-    return [createClassroom()]
-  })
-  const [activeId, setActiveId] = useState(rooms[0].id)
+  const [username, setUsername] = useState(() => normalizeUsername(localStorage.getItem(ACTIVE_USERNAME_KEY) ?? ''))
+  const [usernameDraft, setUsernameDraft] = useState('')
+  const initialWorkspace = username ? loadWorkspace(username) : null
+  const [rooms, setRooms] = useState<Classroom[]>(() => normalizeRooms(initialWorkspace?.rooms ?? [createClassroom('Lớp mới', [])]))
+  const [activeId, setActiveId] = useState(() => initialWorkspace?.activeRoomId ?? initialWorkspace?.rooms[0]?.id ?? rooms[0].id)
   const [view, setView] = useState<ViewMode>('3d')
   const [page, setPage] = useState<WorkspacePage>('seating')
   const [query, setQuery] = useState('')
@@ -77,10 +67,12 @@ function App() {
   const [newRoomName, setNewRoomName] = useState('')
   const [newRoomSource, setNewRoomSource] = useState<NewRoomSource>('sample')
   const [randomCount, setRandomCount] = useState<number>(30)
-  const [profile, setProfile] = useState<TeacherProfile>(() => {
-    try { const saved = localStorage.getItem(PROFILE_KEY); if (saved) return JSON.parse(saved) } catch { /* use defaults */ }
-    return { name: 'Mai Thu', role: 'Giáo viên', email: 'maithu@school.edu.vn', school: 'Trường THPT Nguyễn Du' }
-  })
+  const [profile, setProfile] = useState<TeacherProfile>(() => initialWorkspace?.profile ?? createDefaultProfile(username))
+  const [selectingArea, setSelectingArea] = useState(false)
+  const [selectedSeatIds, setSelectedSeatIds] = useState<string[]>([])
+  /** Chỉ lưu cloud sau khi đã tải workspace Atlas, tránh ghi đè dữ liệu từ trình duyệt khác lúc đăng nhập. */
+  const cloudReadyUsername = useRef<string | null>(null)
+  const cloudSaveTimer = useRef<number | null>(null)
   const dragStudent = useRef<string | null>(null)
   const sceneHandle = useRef<SceneHandle | null>(null)
   const [scene3dDropTarget, setScene3dDropTarget] = useState<string | null>(null)
@@ -93,10 +85,48 @@ function App() {
   const unassigned = room.students.filter(s => !assignedIds.has(s.id) && s.name.toLowerCase().includes(query.toLowerCase()))
   const visibleStudents = room.students.filter(s => s.name.toLowerCase().includes(query.toLowerCase()))
 
-  useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(rooms)), [rooms])
-  useEffect(() => localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)), [profile])
+  useEffect(() => {
+    if (!username) return
+    saveWorkspace({ username, rooms, profile, activeRoomId: activeId, updatedAt: new Date().toISOString() })
+    localStorage.setItem(ACTIVE_USERNAME_KEY, username)
+    if (cloudReadyUsername.current !== username) return
+    if (cloudSaveTimer.current) window.clearTimeout(cloudSaveTimer.current)
+    const workspace = { username, rooms, profile, activeRoomId: activeId, updatedAt: new Date().toISOString() }
+    cloudSaveTimer.current = window.setTimeout(() => {
+      void saveCloudWorkspace(workspace).catch(error => console.warn('Không thể lưu MongoDB Atlas, đã giữ bản local.', error))
+    }, 600)
+    return () => { if (cloudSaveTimer.current) window.clearTimeout(cloudSaveTimer.current) }
+  }, [username, rooms, profile, activeId])
+
+  useEffect(() => {
+    if (!username) { cloudReadyUsername.current = null; return }
+    let cancelled = false
+    cloudReadyUsername.current = null
+    void loadCloudWorkspace(username).then(workspace => {
+      if (cancelled) return
+      if (workspace) {
+        const cloudRooms = normalizeRooms(workspace.rooms)
+        setRooms(cloudRooms.length ? cloudRooms : [createClassroom('Lớp mới', [])])
+        setActiveId(workspace.activeRoomId ?? cloudRooms[0]?.id ?? '')
+        setProfile(workspace.profile ?? createDefaultProfile(username))
+      }
+      cloudReadyUsername.current = username
+      if (!workspace) {
+        const localWorkspace = { username, rooms, profile, activeRoomId: activeId, updatedAt: new Date().toISOString() }
+        void saveCloudWorkspace(localWorkspace).catch(error => console.warn('Không thể tạo workspace MongoDB Atlas.', error))
+      }
+    }).catch(error => {
+      if (!cancelled) setToast('Chưa kết nối được MongoDB Atlas — đang dùng bản lưu trên trình duyệt')
+      console.warn('Không thể tải MongoDB Atlas.', error)
+    })
+    return () => { cancelled = true }
+  // Chỉ tải khi đổi username; rooms/profile ở lần đăng nhập là bản dự phòng cần ghi lần đầu nếu cloud chưa có.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username])
+
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 2600); return () => clearTimeout(t) }, [toast])
   useEffect(() => () => {
+    if (cloudSaveTimer.current) window.clearTimeout(cloudSaveTimer.current)
     if (flightTimer.current) window.clearTimeout(flightTimer.current)
     if (hopTimer.current) window.clearTimeout(hopTimer.current)
   }, [])
@@ -151,6 +181,26 @@ function App() {
   }, [immersive])
 
   const updateRoom = (patch: Partial<Classroom>) => setRooms(list => list.map(r => r.id === room.id ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r))
+  const signIn = () => {
+    const nextUsername = normalizeUsername(usernameDraft)
+    if (!nextUsername) return
+    const workspace = loadWorkspace(nextUsername)
+    const nextRooms = normalizeRooms(workspace?.rooms ?? [createClassroom('Lớp mới', [])])
+    setUsername(nextUsername)
+    setRooms(nextRooms)
+    setActiveId(workspace?.activeRoomId ?? nextRooms[0].id)
+    setProfile(workspace?.profile ?? createDefaultProfile(nextUsername))
+    setUsernameDraft('')
+    setPage('seating')
+    setSelectedSeatIds([])
+  }
+  const switchUser = () => {
+    cloudReadyUsername.current = null
+    setUsername('')
+    localStorage.removeItem(ACTIVE_USERNAME_KEY)
+    setSelectedSeatIds([])
+  }
+
   /** Mở hộp thoại tạo lớp để chọn nguồn danh sách (trống / mẫu / ngẫu nhiên). */
   const addRoom = () => { setNewRoomName(`Lớp mới ${rooms.length + 1}`); setNewRoomSource('sample'); setShowNewRoom(true); setMobileNav(false) }
   const confirmAddRoom = () => {
@@ -304,6 +354,31 @@ function App() {
     }
     setToast(messages[mode === 'column' ? 'column' : scope] ?? 'Đã sắp xếp toàn lớp, giữ nguyên các chỗ khóa')
   }
+  const shuffleSelectedArea = () => {
+    const nextAssignments = shuffleSelectedAssignments(room, selectedSeatIds)
+    const changed = selectedSeatIds.filter(seatId => nextAssignments[seatId] && nextAssignments[seatId] !== room.assignments[seatId])
+    if (changed.length < 2) return setToast('Chọn ít nhất 2 ghế có học sinh và chưa khóa để xáo')
+    updateRoom({ assignments: nextAssignments })
+    startFlights(nextAssignments)
+    setToast(`Đã xáo ${changed.length} học sinh trong vùng chọn`)
+  }
+  const selectArea = (start: { x: number; y: number }, end: { x: number; y: number }) => {
+    if (view === '3d') {
+      setSelectedSeatIds(sceneHandle.current?.seatsInRect(start.x, start.y, end.x, end.y) ?? [])
+    } else {
+      const left = Math.min(start.x, end.x); const right = Math.max(start.x, end.x)
+      const top = Math.min(start.y, end.y); const bottom = Math.max(start.y, end.y)
+      setSelectedSeatIds(seats.filter(seat => {
+        const rect = seatRefs.current[seat.id]?.getBoundingClientRect()
+        if (!rect) return false
+        const parent = seatRefs.current[seat.id]?.closest('.selection-stage')?.getBoundingClientRect()
+        if (!parent) return false
+        const x = rect.left - parent.left + rect.width / 2; const y = rect.top - parent.top + rect.height / 2
+        return x >= left && x <= right && y >= top && y <= bottom
+      }).map(seat => seat.id))
+    }
+  }
+
   const clearUnlocked = () => {
     const locked = new Set(room.lockedSeats ?? [])
     updateRoom({ assignments: Object.fromEntries(Object.entries(room.assignments).filter(([seatId]) => locked.has(seatId))) })
@@ -378,6 +453,14 @@ function App() {
     setToast('Đã xóa học sinh')
   }
 
+  if (!username) return <main className="login-screen"><form className="login-card" onSubmit={event => { event.preventDefault(); signIn() }}>
+    <div className="brand-mark"><Armchair size={24}/></div><h1>Lớp Học 3D</h1>
+    <p>Nhập username để tạo không gian dữ liệu riêng. Nếu username đã tồn tại, các lớp đã lưu sẽ được hiển thị lại.</p>
+    <label>Username<input autoFocus value={usernameDraft} onChange={event => setUsernameDraft(event.target.value)} placeholder="Ví dụ: nguyenvana" maxLength={60}/></label>
+    <button className="primary-button full" type="submit">Vào lớp học</button>
+  </form></main>
+
+
   return <div className={`app-shell ${immersive ? 'immersive' : ''} ${tourStep !== null ? `tour-active tour-step-${tourStep}` : ''}`}>
     <header className="topbar">
       <button className="mobile-menu icon-button" aria-label="Mở menu" onClick={() => setMobileNav(true)}><Menu /></button>
@@ -422,7 +505,9 @@ function App() {
         <div className="segmented"><button className={view === '3d' ? 'active' : ''} onClick={() => setView('3d')}><Box size={17}/> 3D</button><button className={view === '2d' ? 'active' : ''} onClick={() => setView('2d')}><Grid2X2 size={17}/> 2D</button></div>
         {immersive && <div className="stage-title"><Armchair size={15}/> {room.name}{room.teacher ? ` · ${room.teacher}` : ''}</div>}
         <div className="toolbar-spacer" />
-        <button className={`tool-button lock-button ${lockMode ? 'active' : ''}`} onClick={() => { setLockMode(!lockMode); if (view !== '2d') setView('2d') }}>{lockMode ? <Lock size={16}/> : <LockOpen size={16}/>} {lockMode ? 'Đang chọn chỗ khóa' : `Cố định chỗ (${room.lockedSeats?.length ?? 0})`}</button>
+        <button className={`tool-button ${selectingArea ? 'active' : ''}`} onClick={() => { setSelectingArea(value => !value); setSelectedSeatIds([]); setLockMode(false) }}><Grid2X2 size={16}/> {selectingArea ? 'Đang quét vùng' : 'Chọn vùng'}</button>
+        <button className="tool-button" disabled={selectedSeatIds.length < 2} onClick={shuffleSelectedArea}><Shuffle size={16}/> Xáo vùng ({selectedSeatIds.length})</button>
+        <button className={`tool-button lock-button ${lockMode ? 'active' : ''}`} onClick={() => { setLockMode(!lockMode); setSelectingArea(false); if (view !== '2d') setView('2d') }}>{lockMode ? <Lock size={16}/> : <LockOpen size={16}/>} {lockMode ? 'Đang chọn chỗ khóa' : `Cố định chỗ (${room.lockedSeats?.length ?? 0})`}</button>
          <button className="tool-button tour-arrange-button" onClick={() => setShowArrange(!showArrange)}><Sparkles size={17}/> Tự động sắp xếp <ChevronDown size={15}/></button>
         {showArrange && <div className="arrange-menu">
           <strong>Chọn tiêu chí</strong>
@@ -449,11 +534,12 @@ function App() {
       <section className="content-grid">
          <div className="chart-card tour-seat-map">
           <div className={`board-label teacher-${room.teacherDeskSide ?? 'right'}`}><span>BẢNG</span><i className="teacher-desk-2d"><Armchair size={12}/> Bàn GV{room.teacher ? ` · ${room.teacher.split(' ').slice(-2).join(' ')}` : ''}</i></div>
+          <div className="selection-stage">
           {view === '3d' ? <div className="scene"
             onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (!sceneHandle.current || !dragStudent.current) return; const rect = e.currentTarget.getBoundingClientRect(); const hit = sceneHandle.current.seatAt(e.clientX - rect.left, e.clientY - rect.top); if (hit !== scene3dDropTarget) setScene3dDropTarget(hit) }}
             onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node)) return; setScene3dDropTarget(null) }}
             onDrop={e => { e.preventDefault(); if (!dragStudent.current || !scene3dDropTarget) return; placeStudent(scene3dDropTarget, dragStudent.current); dragStudent.current = null; setScene3dDropTarget(null) }}>
-            <ClassroomScene room={room} onSeatClick={cycleSeat} onSeatSwap={swapSeats} highlightSeatId={scene3dDropTarget} handleRef={sceneHandle} flights={flights} flightDuration={FLIGHT_DURATION} hops={hops} hopDuration={HOP_DURATION}/>
+            <ClassroomScene room={room} onSeatClick={cycleSeat} onSeatSwap={swapSeats} highlightSeatId={scene3dDropTarget} selectedSeatIds={selectedSeatIds} handleRef={sceneHandle} flights={flights} flightDuration={FLIGHT_DURATION} hops={hops} hopDuration={HOP_DURATION}/>
             <div className="scene-tip">Kéo để xoay • Cuộn để thu phóng</div>
           </div> :
           <div className={`floor-plan layout-${room.layout}`} style={{ gridTemplateColumns: `repeat(${room.columns}, minmax(110px, 1fr))` }}>
@@ -466,7 +552,7 @@ function App() {
               const flying = Boolean(student) && flightAt !== undefined
               const hopping = Boolean(student) && !flying && hops[seat.id] !== undefined
               const hopOffset = hopping ? hopOffsets[seat.id] : undefined
-              return <div key={seat.id} ref={node => { seatRefs.current[seat.id] = node }} className={`seat-2d ${student ? 'occupied' : ''} ${isLocked ? 'locked' : ''} ${lockMode ? 'lock-mode' : ''} ${dropTargetId === seat.id ? 'drop-target' : ''} ${student?.id === selectedStudentId ? 'selected-student' : ''} ${flying ? 'flying' : ''} ${hopping ? 'hopping' : ''} ${hopOffset ? 'hop-travel' : ''}`} tabIndex={0}
+              return <div key={seat.id} ref={node => { seatRefs.current[seat.id] = node }} className={`seat-2d ${student ? 'occupied' : ''} ${isLocked ? 'locked' : ''} ${lockMode ? 'lock-mode' : ''} ${selectedSeatIds.includes(seat.id) ? 'area-selected' : ''} ${dropTargetId === seat.id ? 'drop-target' : ''} ${student?.id === selectedStudentId ? 'selected-student' : ''} ${flying ? 'flying' : ''} ${hopping ? 'hopping' : ''} ${hopOffset ? 'hop-travel' : ''}`} tabIndex={0}
                 style={flying ? { animationDuration: `${FLIGHT_DURATION}ms` }
                   : hopping ? { animationDuration: `${HOP_DURATION}ms`, ...(hopOffset ? { '--hop-x': `${hopOffset.x}px`, '--hop-y': `${hopOffset.y}px` } as React.CSSProperties : {}) }
                   : undefined}
@@ -483,6 +569,8 @@ function App() {
                 {student ? <><StudentAvatar student={student} mini/><span className="seat-name-2d" title={student.role ? `${student.name} · ${student.role}` : student.name}>{getDisplayName(student.name)}</span>{student.role && <span className="seat-role-2d" title={student.role}>{student.role}</span>}</> : <><Plus size={16}/><span>Ghế trống</span></>}
               </div>})}</div></div>)}
           </div>}
+          <SelectionOverlay active={selectingArea} onSelect={selectArea} />
+          </div>
           <div className="legend"><span><i className="assigned-dot"/> Đã gán: {Object.keys(room.assignments).length}</span><span><i className="locked-dot"/> Cố định: {room.lockedSeats?.length ?? 0}</span><span><i className="empty-dot"/> Còn trống: {Math.max(0, seats.length - Object.keys(room.assignments).length)}</span><span className="capacity">Sức chứa <strong>{seats.length}</strong></span></div>
         </div>
 
@@ -588,6 +676,8 @@ function App() {
       <div className="profile-form-head"><div className="profile-avatar large">{initials(profile.name)}</div><div><strong>{profile.name || 'Giáo viên'}</strong><small>Dữ liệu được lưu trên trình duyệt này</small></div></div>
       <div className="form-grid"><label>Họ và tên<input value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })}/></label><label>Vai trò<input value={profile.role} onChange={e => setProfile({ ...profile, role: e.target.value })}/></label><label>Email<input type="email" value={profile.email} onChange={e => setProfile({ ...profile, email: e.target.value })}/></label><label>Trường / đơn vị<input value={profile.school} onChange={e => setProfile({ ...profile, school: e.target.value })}/></label></div>
       <button className="primary-button full" onClick={() => { setShowProfile(false); setToast('Đã lưu hồ sơ giáo viên') }}>Lưu hồ sơ</button>
+      <p className="modal-help">Username đang dùng: <strong>{username}</strong>. Dữ liệu lớp và hồ sơ được lưu riêng theo username này trên trình duyệt.</p>
+      <button className="ghost-button full" onClick={() => { setShowProfile(false); switchUser() }}>Đổi username</button>
     </Modal>}
     {toast && <div className="toast">✓ {toast}</div>}
     {tourStep !== null && <TutorialTour step={tourStep} onNext={() => setTourStep(current => current === 3 ? null : (current ?? 0) + 1)} onBack={() => setTourStep(current => Math.max(0, (current ?? 0) - 1))} onClose={finishTutorial} />}

@@ -133,3 +133,20 @@ describe('ưu tiên ba hàng gần bảng', () => {
   })
 })
 
+
+describe('xáo học sinh trong vùng chọn', () => {
+  it('chỉ hoán đổi học sinh ở ghế đã chọn và không khóa', async () => {
+    const { shuffleSelectedAssignments } = await import('./lib')
+    const room = makeRoom(3, 3)
+    const seats = getSeats(room)
+    const assignments = Object.fromEntries(seats.slice(0, 6).map((seat, index) => [seat.id, room.students[index].id]))
+    const lockedSeat = seats[1]
+    const source: Classroom = { ...room, assignments, lockedSeats: [lockedSeat.id] }
+    const result = shuffleSelectedAssignments(source, [seats[0].id, lockedSeat.id, seats[2].id], () => 0)
+    expect(result[lockedSeat.id]).toBe(assignments[lockedSeat.id])
+    expect(result[seats[0].id]).toBe(assignments[seats[2].id])
+    expect(result[seats[2].id]).toBe(assignments[seats[0].id])
+    expect(result[seats[3].id]).toBe(assignments[seats[3].id])
+  })
+})
+

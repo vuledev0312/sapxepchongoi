@@ -329,6 +329,22 @@ export function applyLastRowRule(room: Classroom, assignments: Record<string, st
   return next
 }
 
+/** Xáo học sinh trong các ghế được chọn. Ghế trống và ghế khóa giữ nguyên. */
+export function shuffleSelectedAssignments(room: Classroom, selectedSeatIds: Iterable<string>, random = Math.random): Record<string, string> {
+  const selected = new Set(selectedSeatIds)
+  const locked = new Set(room.lockedSeats ?? [])
+  const eligibleSeats = getSeats(room).filter(seat => selected.has(seat.id) && !locked.has(seat.id) && room.assignments[seat.id])
+  if (eligibleSeats.length < 2) return { ...room.assignments }
+
+  const studentIds = eligibleSeats.map(seat => room.assignments[seat.id])
+  for (let index = studentIds.length - 1; index > 0; index--) {
+    const swapIndex = Math.floor(random() * (index + 1))
+    ;[studentIds[index], studentIds[swapIndex]] = [studentIds[swapIndex], studentIds[index]]
+  }
+  return { ...room.assignments, ...Object.fromEntries(eligibleSeats.map((seat, index) => [seat.id, studentIds[index]])) }
+}
+
+
 export function arrange(room: Classroom, mode: ArrangeMode, scope: ArrangeScope = 'all'): Record<string, string> {
   return applyLastRowRule(room, arrangeSeats(room, mode, scope), normalizeLastRowRule(room.lastRowRule))
 }

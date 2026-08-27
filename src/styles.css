@@ -29,6 +29,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .primary-button { background: var(--green); color: #fff; box-shadow: 0 3px 10px #244f4630; }
 .primary-button:hover { background: #173f36; }
 .primary-button.full { width: 100%; margin-top: 18px; padding: 13px; }
+.tool-button:disabled { cursor: not-allowed; opacity: .45; }
 .ghost-button { background: #fff; color: #48534f; border: 1px solid var(--line); }
 .icon-button { border: 0; background: transparent; color: #59645f; width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; padding: 0; }
 .icon-button:hover { background: #eef0ec; }
@@ -354,3 +355,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .tour-step-1 .tour-student-panel, .tour-step-2 .tour-seat-map, .tour-step-2 .tour-student-panel { box-shadow: 0 0 0 3px #fff, 0 0 0 6px #e0a45e; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+
+.selection-stage { position: relative; flex: 1; min-height: 0; display: flex; }
+.selection-stage > .scene, .selection-stage > .floor-plan { width: 100%; }
+.selection-overlay { position: absolute; inset: 0; z-index: 8; cursor: crosshair; touch-action: none; }
+.selection-rectangle { position: absolute; border: 2px solid #347366; background: #34736624; border-radius: 3px; pointer-events: none; }
+.seat-2d.area-selected { outline: 3px solid #d88216; outline-offset: 2px; background: #fff0cf; border-color: #d88216; box-shadow: 0 5px 16px #d8821640; }
+.seat-2d.area-selected .mini-avatar { background: #c66d12; }
+.seat-2d.area-selected .seat-name-2d { color: #754000; }
+.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #e9f1ed, #f6f3ea); }
+.login-card { width: min(100%, 420px); background: #fff; border: 1px solid var(--line); border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px #244f4620; }
+.login-card h1 { margin: 16px 0 8px; font-family: Georgia, "Times New Roman", serif; color: var(--green); }
+.login-card p { color: var(--muted); line-height: 1.6; font-size: 13px; }
+.login-card label { display: grid; gap: 7px; margin-top: 22px; font-size: 12px; font-weight: 700; color: #4e5a55; }
+.login-card input { border: 1px solid var(--line); border-radius: 8px; padding: 11px; }
