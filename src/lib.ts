@@ -329,6 +329,40 @@ export function applyLastRowRule(room: Classroom, assignments: Record<string, st
   return next
 }
 
+/** Các ghế của một dãy (cột) theo thứ tự lấp chỗ: từ bàn gần bảng ra xa, ghế 1 rồi ghế 2. */
+export function columnFillOrder(room: Classroom, column: number): SeatPosition[] {
+  // row = 0 nằm gần bảng khi bảng ở phía trước; khi bảng ở phía sau thì đảo lại.
+  const rowRank = (row: number) => (room.boardSide === 'back' ? room.rows - 1 - row : row)
+  return getSeats(room)
+    .filter(seat => seat.column === column)
+    .sort((a, b) => rowRank(a.row) - rowRank(b.row) || a.seatIndex - b.seatIndex)
+}
+
+/**
+ * Đưa `count` học sinh vào một dãy (cột): lấp lần lượt từ bàn gần bảng ra xa.
+ * Ghế đang khóa được giữ nguyên; nếu số học sinh ít hơn số ghế thì các ghế cuối để trống
+ * (một bàn có thể chỉ có 1 học sinh). Ưu tiên các học sinh chưa xếp chỗ, có gắn cờ ưu tiên lên trước.
+ */
+export function fillColumnWithStudents(room: Classroom, column: number, count: number): Record<string, string> {
+  const locked = new Set(room.lockedSeats ?? [])
+  const targetSeats = columnFillOrder(room, column).filter(seat => !locked.has(seat.id))
+  const wanted = clamp(Math.round(Number(count) || 0), 0, targetSeats.length)
+
+  const next = { ...room.assignments }
+  // Xóa học sinh đang ngồi ở các ghế đích (chưa khóa) để lấp lại từ đầu.
+  targetSeats.forEach(seat => { delete next[seat.id] })
+
+  const seated = new Set(Object.values(next))
+  const available = [...room.students]
+    .filter(student => !seated.has(student.id))
+    .sort((a, b) => Number(b.priority) - Number(a.priority))
+
+  for (let index = 0; index < wanted && index < available.length; index++) {
+    next[targetSeats[index].id] = available[index].id
+  }
+  return next
+}
+
 /** Xáo học sinh trong các ghế được chọn. Ghế trống và ghế khóa giữ nguyên. */
 export function shuffleSelectedAssignments(room: Classroom, selectedSeatIds: Iterable<string>, random = Math.random): Record<string, string> {
   const selected = new Set(selectedSeatIds)

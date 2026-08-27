@@ -150,3 +150,37 @@ describe('xáo học sinh trong vùng chọn', () => {
   })
 })
 
+describe('đưa học sinh vào dãy (cột)', () => {
+  it('lấp N học sinh vào dãy, bàn cuối có thể chỉ 1 học sinh', async () => {
+    const { fillColumnWithStudents } = await import('./lib')
+    const room = makeRoom(8, 8) // 3 hàng × 4 cột × 2 ghế/bàn = 24 ghế; 16 học sinh
+    const next = fillColumnWithStudents(room, 0, 4)
+    // Dãy 0 gồm các deskIndex 0, 4, 8 → 6 ghế. Chỉ 4 học sinh được đưa vào.
+    const inCol = Object.keys(next).filter(id => id.startsWith('0-') || id.startsWith('4-') || id.startsWith('8-'))
+    expect(inCol.length).toBe(4)
+    expect(new Set(Object.values(next)).size).toBe(Object.keys(next).length)
+  })
+
+  it('giữ nguyên ghế khóa trong dãy và không lấp vào đó', async () => {
+    const { fillColumnWithStudents } = await import('./lib')
+    const room = makeRoom(8, 8)
+    const lockedSeat = '0-0'
+    const lockedStudent = room.students[0]
+    const base: Classroom = { ...room, assignments: { [lockedSeat]: lockedStudent.id }, lockedSeats: [lockedSeat] }
+    const next = fillColumnWithStudents(base, 0, 5)
+    expect(next[lockedSeat]).toBe(lockedStudent.id)
+    // Số học sinh mới thêm vào dãy phải bằng min(requested, available, unlockedSeats)
+    const added = Object.keys(next).filter(id => (id.startsWith('0-') || id.startsWith('4-') || id.startsWith('8-')) && id !== lockedSeat).length
+    expect(added).toBeLessThanOrEqual(5)
+  })
+
+  it('không làm gì khi requested <= 0 hoặc không còn học sinh chưa xếp', async () => {
+    const { fillColumnWithStudents } = await import('./lib')
+    const room = makeRoom(0, 0)
+    const next = fillColumnWithStudents(room, 0, 5)
+    expect(Object.keys(next).length).toBe(0)
+    const nextZero = fillColumnWithStudents({ ...makeRoom(8, 8), assignments: {} }, 0, 0)
+    expect(Object.keys(nextZero).length).toBe(0)
+  })
+})
+

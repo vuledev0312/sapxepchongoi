@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Armchair, BarChart3, BookOpen, Box, CheckCircle2, ChevronDown, CircleHelp, Copy, Dices, Download, Eraser, FileDown, FileSpreadsheet, FileText, FileUp, Grid2X2, ImagePlus, LayoutDashboard, Lock, LockOpen, Maximize2, Menu, Minimize2, Pencil, Plane, Plus, Rabbit, RotateCcw, Search, Settings2, Shuffle, Sparkles, Trash2, UserRound, Users, Wand2, X } from 'lucide-react'
+import { Armchair, BarChart3, BookOpen, Box, CheckCircle2, ChevronDown, CircleHelp, Columns3, Copy, Dices, Download, Eraser, FileDown, FileSpreadsheet, FileText, FileUp, Grid2X2, ImagePlus, LayoutDashboard, Lock, LockOpen, Maximize2, Menu, Minimize2, Pencil, Plane, Plus, Rabbit, RotateCcw, Search, Settings2, Shuffle, Sparkles, Trash2, UserRound, Users, Wand2, X } from 'lucide-react'
 import SelectionOverlay from './SelectionOverlay'
 import { ACTIVE_USERNAME_KEY, createDefaultProfile, loadCloudWorkspace, loadWorkspace, normalizeUsername, saveCloudWorkspace, saveWorkspace, type TeacherProfile } from './storage'
 
 import ClassroomScene, { type HopRequest, type SceneHandle } from './ClassroomScene'
-import { DEFAULT_COLUMN_GENDER_RATIO, LAST_ROW_RULE_LABELS, LAST_ROW_RULE_OPTIONS, MAX_SEATS_PER_DESK, RANDOM_STUDENT_COUNT_OPTIONS, applyLastRowRule, arrange, createClassroom, createSampleStudents, demoStudents, downloadStudentTemplate, exportPdf, exportStudentsCsv, exportWord, generateRandomStudents, getDefaultSchoolYear, getDeskSeatCount, getDisplayName, getSeats, legacyDemoStudentNames, normalizeGenderRatio, normalizeLastRowRule, parseStudents, shuffleSelectedAssignments, studentsToCsv, uid } from './lib'
+import { DEFAULT_COLUMN_GENDER_RATIO, LAST_ROW_RULE_LABELS, LAST_ROW_RULE_OPTIONS, MAX_SEATS_PER_DESK, RANDOM_STUDENT_COUNT_OPTIONS, applyLastRowRule, arrange, createClassroom, createSampleStudents, demoStudents, downloadStudentTemplate, exportPdf, exportStudentsCsv, exportWord, fillColumnWithStudents, generateRandomStudents, getDefaultSchoolYear, getDeskSeatCount, getDisplayName, getSeats, legacyDemoStudentNames, normalizeGenderRatio, normalizeLastRowRule, parseStudents, shuffleSelectedAssignments, studentsToCsv, uid } from './lib'
 import type { ArrangeMode, ArrangeScope, Classroom, LastRowRule, LayoutStyle, Student, ViewMode } from './types'
 
 const FLIGHT_DURATION = 1400
@@ -70,6 +70,9 @@ function App() {
   const [profile, setProfile] = useState<TeacherProfile>(() => initialWorkspace?.profile ?? createDefaultProfile(username))
   const [selectingArea, setSelectingArea] = useState(false)
   const [selectedSeatIds, setSelectedSeatIds] = useState<string[]>([])
+  /** Dãy (cột) và số học sinh đang nhập cho tính năng "Đưa N học sinh vào dãy". */
+  const [fillColumnIndex, setFillColumnIndex] = useState<string>('')
+  const [fillStudentCount, setFillStudentCount] = useState<number | ''>('')
   /** Chỉ lưu cloud sau khi đã tải workspace Atlas, tránh ghi đè dữ liệu từ trình duyệt khác lúc đăng nhập. */
   const cloudReadyUsername = useRef<string | null>(null)
   const cloudSaveTimer = useRef<number | null>(null)
@@ -210,7 +213,7 @@ function App() {
     setRooms([...rooms, next]); setActiveId(next.id); setPage('seating'); setShowNewRoom(false); setShowSetup(true)
     setToast(students.length ? `Đã tạo ${name} với ${students.length} học sinh` : `Đã tạo ${name}`)
   }
-  const selectRoom = (id: string) => { setActiveId(id); setSelectedStudentId(null); setQuery(''); setMobileNav(false); setShowExport(false); setFlights({}); setHops({}) }
+  const selectRoom = (id: string) => { setActiveId(id); setSelectedStudentId(null); setSelectedSeatIds([]); setFillColumnIndex(''); setFillStudentCount(''); setQuery(''); setMobileNav(false); setShowExport(false); setFlights({}); setHops({}) }
   const duplicateRoom = (source: Classroom) => {
     const copy: Classroom = { ...source, id: uid(), name: `${source.name} (bản sao)`, students: source.students.map(student => ({ ...student, id: uid() })), assignments: {}, lockedSeats: [], updatedAt: new Date().toISOString() }
     setRooms(list => [...list, copy]); setActiveId(copy.id); setPage('seating'); setToast('Đã nhân bản lớp học')
@@ -362,6 +365,21 @@ function App() {
     startFlights(nextAssignments)
     setToast(`Đã xáo ${changed.length} học sinh trong vùng chọn`)
   }
+  /** Đưa N học sinh (chưa xếp chỗ) vào dãy đã chọn, lấp từ bàn gần bảng ra xa. */
+  const fillColumn = () => {
+    if (fillColumnIndex === '') return setToast('Hãy chọn dãy cần xếp')
+    const column = Number(fillColumnIndex)
+    const seatCount = seats.filter(seat => seat.column === column).length
+    const requested = fillStudentCount === '' ? seatCount : Number(fillStudentCount)
+    if (requested <= 0) return setToast('Hãy nhập số học sinh cần đưa vào')
+    const nextAssignments = fillColumnWithStudents(room, column, requested)
+    const added = seats.filter(seat => seat.column === column && nextAssignments[seat.id] && nextAssignments[seat.id] !== room.assignments[seat.id]).length
+    if (!added) return setToast('Không còn học sinh chưa xếp hoặc ghế trống trong dãy')
+    updateRoom({ assignments: nextAssignments })
+    startFlights(nextAssignments)
+    setSelectedSeatIds([])
+    setToast(`Đã đưa ${added} học sinh vào dãy ${column + 1}`)
+  }
   const selectArea = (start: { x: number; y: number }, end: { x: number; y: number }) => {
     if (view === '3d') {
       setSelectedSeatIds(sceneHandle.current?.seatsInRect(start.x, start.y, end.x, end.y) ?? [])
@@ -506,6 +524,12 @@ function App() {
         {immersive && <div className="stage-title"><Armchair size={15}/> {room.name}{room.teacher ? ` · ${room.teacher}` : ''}</div>}
         <div className="toolbar-spacer" />
         <button className={`tool-button ${selectingArea ? 'active' : ''}`} onClick={() => { setSelectingArea(value => !value); setSelectedSeatIds([]); setLockMode(false) }}><Grid2X2 size={16}/> {selectingArea ? 'Đang quét vùng' : 'Chọn vùng'}</button>
+        <div className="tool-select fill-column" title="Đưa số học sinh vào một dãy (cột)">
+          <Columns3 size={15}/>
+          <select aria-label="Chọn dãy (cột)" value={fillColumnIndex} onChange={e => setFillColumnIndex(e.target.value)}><option value="">Chọn dãy…</option>{Array.from({ length: room.columns }, (_, index) => <option key={index} value={index}>Dãy {index + 1}</option>)}</select>
+          <input aria-label="Số học sinh đưa vào" type="number" min={0} max={seats.length} placeholder="Số HS" value={fillStudentCount} onChange={e => setFillStudentCount(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))} onKeyDown={e => { if (e.key === 'Enter') fillColumn() }}/>
+          <button className="fill-column-go" aria-label="Đưa học sinh vào dãy" onClick={fillColumn}><Plus size={14}/> Đưa vào</button>
+        </div>
         <button className="tool-button" disabled={selectedSeatIds.length < 2} onClick={shuffleSelectedArea}><Shuffle size={16}/> Xáo vùng ({selectedSeatIds.length})</button>
         <button className={`tool-button lock-button ${lockMode ? 'active' : ''}`} onClick={() => { setLockMode(!lockMode); setSelectingArea(false); if (view !== '2d') setView('2d') }}>{lockMode ? <Lock size={16}/> : <LockOpen size={16}/>} {lockMode ? 'Đang chọn chỗ khóa' : `Cố định chỗ (${room.lockedSeats?.length ?? 0})`}</button>
          <button className="tool-button tour-arrange-button" onClick={() => setShowArrange(!showArrange)}><Sparkles size={17}/> Tự động sắp xếp <ChevronDown size={15}/></button>

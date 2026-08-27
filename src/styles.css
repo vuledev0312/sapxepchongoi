@@ -91,6 +91,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .segmented button.active { background: #fff; color: var(--green); font-weight: 700; box-shadow: 0 1px 4px #00000012; }
 .toolbar-spacer { flex: 1; }
 .tool-button { padding: 9px 12px; background: #f0f5f2; color: var(--green); margin-right: 8px; }
+.tool-select { display: flex; align-items: center; gap: 5px; padding: 6px 8px; background: #f0f5f2; color: var(--green); border-radius: 7px; margin-right: 8px; font-size: 10px; }
+.tool-select select, .tool-select input { border: 0; background: transparent; color: var(--green); font: inherit; font-weight: 600; outline: none; cursor: pointer; }
+.tool-select input { width: 52px; cursor: text; }
+.fill-column .fill-column-go { display: inline-flex; align-items: center; gap: 4px; border: 0; background: var(--green); color: #fff; border-radius: 6px; padding: 6px 9px; font: inherit; font-weight: 700; font-size: 9px; cursor: pointer; }
+.fill-column .fill-column-go:hover { filter: brightness(1.05); }
 .lock-button { background: #f5f3ee; color: #65706b; }
 .lock-button.active { background: #fbe7df; color: #a44e38; box-shadow: inset 0 0 0 1px #deb1a3; }
 .arrange-menu { position: absolute; z-index: 15; right: 52px; top: 50px; width: 215px; background: #fff; border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 14px 40px #26343025; padding: 8px; }
